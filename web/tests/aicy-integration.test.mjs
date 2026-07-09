@@ -1,0 +1,122 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+
+function source(path) {
+    return readFileSync(new URL(path, import.meta.url), "utf8");
+}
+
+const integrationSource = source("../src/services/aicy-integration.ts");
+const remoteStateSource = source("../src/services/aicy-remote-state.ts");
+const canvasStoreSource = source("../src/stores/canvas/use-canvas-store.ts");
+const assetStoreSource = source("../src/stores/use-asset-store.ts");
+const imageStorageSource = source("../src/services/image-storage.ts");
+const fileStorageSource = source("../src/services/file-storage.ts");
+const configStoreSource = source("../src/stores/use-config-store.ts");
+const imageApiSource = source("../src/services/api/image.ts");
+const clientRootSource = source("../src/components/layout/client-root-init.tsx");
+const chatgpt2apiSource = source("../src/services/chatgpt2api-config.ts");
+const viteConfigSource = source("../vite.config.ts");
+const appConfigModalSource = source("../src/components/layout/app-config-modal.tsx");
+const appTopNavSource = source("../src/components/layout/app-top-nav.tsx");
+const userStatusActionsSource = source("../src/components/layout/user-status-actions.tsx");
+const mobileNavDrawerSource = source("../src/components/layout/mobile-nav-drawer.tsx");
+const homePageSource = source("../src/pages/home/index.tsx");
+const canvasPageSource = source("../src/pages/canvas/index.tsx");
+const canvasProjectSource = source("../src/pages/canvas/project.tsx");
+
+assert.ok(integrationSource.includes("isAicyCanvasMode"));
+assert.ok(integrationSource.includes('"aicy.canvas.ready"'));
+assert.ok(integrationSource.includes('"aicy.canvas.requestSession"'));
+assert.ok(integrationSource.includes('"aicy.canvas.session"'));
+assert.ok(integrationSource.includes('"aicy.canvas.returnToAicy"'));
+assert.ok(integrationSource.includes('Authorization", `Bearer ${activeSession.token}`'));
+
+assert.ok(remoteStateSource.includes("GET"));
+assert.ok(remoteStateSource.includes("PUT"));
+assert.ok(remoteStateSource.includes("projects"));
+assert.ok(remoteStateSource.includes("assets"));
+assert.ok(remoteStateSource.includes("preferences"));
+
+assert.ok(canvasStoreSource.includes('createAicyPersistStorage("canvas")'));
+assert.ok(assetStoreSource.includes('createAicyPersistStorage("assets")'));
+
+assert.ok(imageStorageSource.includes("saveAicyCanvasFile(storageKey, blob)"));
+assert.ok(imageStorageSource.includes("readAicyCanvasFile(storageKey)"));
+assert.ok(fileStorageSource.includes("saveAicyCanvasFile(storageKey, blob)"));
+assert.ok(fileStorageSource.includes("readAicyCanvasFile(storageKey)"));
+
+assert.ok(configStoreSource.includes("createManagedAicyConfig"));
+assert.ok(configStoreSource.includes("isAicyCanvasMode()"));
+assert.match(configStoreSource, /canvasImageCount:\s*"1"/);
+assert.equal(configStoreSource.includes('canvasImageCount: config.canvasImageCount || "3"'), false);
+assert.ok(configStoreSource.includes("LEGACY_AICY_CANVAS_IMAGE_COUNT_DEFAULT"));
+assert.ok(configStoreSource.includes("normalizeAicyImageCountPreference"));
+assert.ok(configStoreSource.includes("createManagedAicyConfigModels"));
+assert.ok(configStoreSource.includes("const requestedModel = modelOptionName(value || config.model || config.imageModel)"));
+assert.ok(configStoreSource.includes("model: normalizeChatgpt2apiModelName(requestedModel, models)"));
+assert.equal(configStoreSource.includes("const imageModel = chatgpt2apiModel()"), false);
+assert.equal(configStoreSource.includes("models: [imageModel]"), false);
+assert.equal(configStoreSource.includes("apiKey: session.token"), false);
+
+assert.ok(chatgpt2apiSource.includes("VITE_CHATGPT2API_BASE_URL"));
+assert.ok(chatgpt2apiSource.includes("VITE_CHATGPT2API_API_KEY"));
+assert.ok(chatgpt2apiSource.includes('"/__chatgpt2api/v1"'));
+assert.ok(chatgpt2apiSource.includes("chatgpt2apiBrowserBaseUrl"));
+assert.ok(chatgpt2apiSource.includes("chatgpt2apiConfiguredBaseUrl"));
+assert.ok(chatgpt2apiSource.includes("chatgpt2apiConfiguredApiKey"));
+assert.ok(chatgpt2apiSource.includes("chatgpt2apiKeyStatus"));
+assert.ok(chatgpt2apiSource.includes("chatgpt2apiDefaultModels"));
+assert.equal(chatgpt2apiSource.includes('const CHATGPT2API_MODEL = "gpt-image-2"'), false);
+assert.ok(viteConfigSource.includes("__CHATGPT2API_CONFIGURED_BASE_URL__"));
+assert.ok(viteConfigSource.includes("__CHATGPT2API_HAS_SERVER_API_KEY__"));
+assert.ok(viteConfigSource.includes('"/__chatgpt2api"'));
+assert.ok(viteConfigSource.includes("rewrite"));
+assert.ok(configStoreSource.includes("chatgpt2apiConfiguredBaseUrl"));
+assert.ok(configStoreSource.includes("chatgpt2apiConfiguredApiKey"));
+assert.ok(imageApiSource.includes("chatgpt2apiBrowserBaseUrl"));
+assert.ok(imageApiSource.includes("chatgpt2apiAuthHeaders"));
+assert.ok(imageApiSource.includes("resolveModelRequestConfig(config, config.imageModel || config.model)"));
+assert.ok(imageApiSource.includes("resolveModelRequestConfig(config, config.textModel || config.model)"));
+assert.ok(appConfigModalSource.includes("chatgpt2apiConfiguredBaseUrl"));
+assert.equal(appConfigModalSource.includes("模型固定为 gpt-image-2"), false);
+assert.ok(appConfigModalSource.includes("Key 状态"));
+assert.ok(imageApiSource.includes('b64_json.startsWith("data:image/")'));
+assert.ok(imageApiSource.includes('b64_json.includes("base64,")'));
+assert.equal(imageApiSource.includes("aicyOpenAiBaseUrl"), false);
+assert.equal(imageApiSource.includes("aicyAuthHeaders"), false);
+assert.ok(clientRootSource.includes("requestAicyCanvasSession"));
+assert.ok(clientRootSource.includes("fetchChatgpt2apiModels"));
+assert.ok(clientRootSource.includes("createManagedAicyConfig(state.config, models)"));
+assert.ok(clientRootSource.includes("aicy=1"));
+assert.ok(appTopNavSource.includes("const aicyMode = isAicyCanvasMode()"));
+assert.ok(appTopNavSource.includes('const aicySearch = aicyMode ? search : ""'));
+assert.ok(appTopNavSource.includes("autoConnectRef.current || aicyMode"));
+assert.ok(appTopNavSource.includes("{!aicyMode ? <CodexStatusButton /> : null}"));
+assert.ok(appTopNavSource.includes("<UserStatusActions />"));
+assert.ok(appTopNavSource.includes('pathname: "/canvas"'));
+assert.ok(appTopNavSource.includes("search: aicySearch"));
+assert.ok(mobileNavDrawerSource.includes("search?: string"));
+assert.ok(mobileNavDrawerSource.includes("search }"));
+assert.ok(userStatusActionsSource.includes("requestAicyReturnToAicy"));
+assert.ok(userStatusActionsSource.includes("回到Aicy"));
+assert.ok(userStatusActionsSource.includes("AicyReturnAction"));
+assert.ok(userStatusActionsSource.includes("{!aicyMode ? ("));
+assert.ok(userStatusActionsSource.includes("<AnimatedThemeToggler"));
+assert.ok(userStatusActionsSource.includes("<VersionReleaseModal"));
+assert.ok(userStatusActionsSource.includes("onOpenShortcuts ? ("));
+assert.ok(canvasPageSource.includes("const routeQuery = searchParams.toString()"));
+assert.ok(canvasPageSource.includes('navigate(`/canvas/${id}${routeQuery ? `?${routeQuery}` : ""}`)'));
+assert.ok(canvasProjectSource.includes("const aicyMode = isAicyCanvasMode()"));
+assert.ok(canvasProjectSource.includes("const canvasRouteSearch = aicyMode ?"));
+assert.ok(canvasProjectSource.includes("aicyMode={aicyMode}"));
+assert.ok(canvasProjectSource.includes("{!aicyMode ? <CompactAgentStatus"));
+assert.ok(canvasProjectSource.includes("{!aicyMode ? ("));
+assert.ok(canvasProjectSource.includes("navigate(`/canvas${canvasRouteSearch}`"));
+assert.ok(canvasProjectSource.includes('{ key: "docs", icon: <BookOpen className="size-4" />, label: "文档"'));
+assert.equal(canvasProjectSource.includes('...(!aicyMode ? [{ key: "docs"'), false);
+assert.ok(canvasProjectSource.includes('<UserStatusActions variant="canvas" onOpenShortcuts={() => setShortcutsOpen(true)} />'));
+assert.ok(homePageSource.includes("isAicyCanvasMode()"));
+assert.ok(homePageSource.includes('pathname: "/canvas"'));
+assert.ok(homePageSource.includes("search: location.search"));
+
+console.log("aicy integration tests passed");

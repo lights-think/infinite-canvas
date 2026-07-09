@@ -4,6 +4,8 @@ import { buildApiUrl, resolveModelRequestConfig, type AiConfig, type ModelChanne
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
+import { isAicyCanvasMode, requestAicyCanvasSession } from "@/services/aicy-integration";
+import { chatgpt2apiAuthHeaders, chatgpt2apiBrowserBaseUrl } from "@/services/chatgpt2api-config";
 import { imageToDataUrl } from "@/services/image-storage";
 import type { ReferenceImage } from "@/types/image";
 
@@ -19,10 +21,7 @@ export type ResponseToolCall = {
     thoughtSignature?: string;
 };
 
-export type ResponseInputMessage =
-    | AiTextMessage
-    | { type: "function_call"; call_id: string; name: string; arguments: string; thoughtSignature?: string }
-    | { role: "tool"; tool_call_id: string; content: string };
+export type ResponseInputMessage = AiTextMessage | { type: "function_call"; call_id: string; name: string; arguments: string; thoughtSignature?: string } | { role: "tool"; tool_call_id: string; content: string };
 
 export type ResponseFunctionTool = {
     type: "function";
@@ -42,10 +41,7 @@ export type ToolResponseResult = {
 type ToolChoice = "auto" | "required" | { type: "function"; name: string };
 type ResponseMessageContent = AiTextMessage["content"] | string;
 type ResponseInputContent = { type: "input_text"; text: string } | { type: "input_image"; image_url: string };
-type ResponseInputItem =
-    | { role: "system" | "user" | "assistant"; content: string | ResponseInputContent[] }
-    | { type: "function_call"; call_id: string; name: string; arguments: string }
-    | { type: "function_call_output"; call_id: string; output: string };
+type ResponseInputItem = { role: "system" | "user" | "assistant"; content: string | ResponseInputContent[] } | { type: "function_call"; call_id: string; name: string; arguments: string } | { type: "function_call_output"; call_id: string; output: string };
 type ResponseApiToolDefinition = {
     type: "function";
     name: string;
@@ -53,9 +49,7 @@ type ResponseApiToolDefinition = {
     parameters: Record<string, unknown>;
     strict?: boolean;
 };
-type ResponseApiOutputItem =
-    | { type?: "message"; content?: Array<{ type?: string; text?: string }> }
-    | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string };
+type ResponseApiOutputItem = { type?: "message"; content?: Array<{ type?: string; text?: string }> } | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string };
 type ResponseApiPayload = {
     id?: string;
     output?: ResponseApiOutputItem[];
@@ -219,13 +213,23 @@ function supportsGeminiImageSize(model: string) {
     return value.includes("gemini-3") || value.includes("3.1") || value.includes("3-pro");
 }
 
+function normalizeBase64ImageValue(b64_json: string) {
+    if (b64_json.startsWith("data:image/")) return b64_json;
+    if (b64_json.includes("base64,")) return `data:image/png;base64,${b64_json.slice(b64_json.indexOf("base64,") + "base64,".length)}`;
+    return `data:image/png;base64,${b64_json}`;
+}
+
+function stringField(value: unknown) {
+    return typeof value === "string" ? value.trim() : "";
+}
+
 function resolveImageDataUrl(item: Record<string, unknown>) {
-    if (typeof item.b64_json === "string" && item.b64_json) {
-        return `data:image/png;base64,${item.b64_json}`;
-    }
-    if (typeof item.url === "string" && item.url) {
-        return item.url;
-    }
+    const b64_json = stringField(item.b64_json) || stringField(item.b64) || stringField(item.base64) || stringField(item.image_base64);
+    if (b64_json) return normalizeBase64ImageValue(b64_json);
+    const dataUrl = stringField(item.data_url);
+    if (dataUrl) return dataUrl;
+    const url = stringField(item.url) || stringField(item.image_url);
+    if (url) return url;
     return null;
 }
 
@@ -268,10 +272,12 @@ function withSystemPrompt(config: AiConfig, prompt: string) {
 }
 
 function aiApiUrl(config: AiConfig, path: string) {
+    if (isAicyCanvasMode()) return buildApiUrl(chatgpt2apiBrowserBaseUrl(), path);
     return buildApiUrl(config.baseUrl, path);
 }
 
 function aiHeaders(config: AiConfig, contentType?: string) {
+    if (isAicyCanvasMode()) return chatgpt2apiAuthHeaders(contentType);
     return {
         Authorization: `Bearer ${config.apiKey}`,
         ...(contentType ? { "Content-Type": contentType } : {}),
@@ -458,12 +464,7 @@ async function requestStreamingResponse(config: AiConfig, body: Record<string, u
 }
 
 function toGeminiBody(config: AiConfig, messages: ResponseInputMessage[], extra?: Record<string, unknown>) {
-    const systemText = [
-        config.systemPrompt.trim(),
-        ...messages.flatMap((message) => (!("type" in message) && message.role === "system" ? [geminiTextContent(message.content)] : [])),
-    ]
-        .filter(Boolean)
-        .join("\n\n");
+    const systemText = [config.systemPrompt.trim(), ...messages.flatMap((message) => (!("type" in message) && message.role === "system" ? [geminiTextContent(message.content)] : []))].filter(Boolean).join("\n\n");
     const contents = toGeminiContents(messages.filter((message) => ("type" in message ? true : message.role !== "system")));
     return {
         contents,
@@ -523,10 +524,7 @@ function toGeminiToolOptions(tools: ResponseFunctionTool[], toolChoice: ToolChoi
         description: tool.function.description,
         parameters: tool.function.parameters,
     }));
-    const functionCallingConfig =
-        typeof toolChoice === "object"
-            ? { mode: "ANY", allowedFunctionNames: [toolChoice.name] }
-            : { mode: toolChoice === "required" ? "ANY" : "AUTO" };
+    const functionCallingConfig = typeof toolChoice === "object" ? { mode: "ANY", allowedFunctionNames: [toolChoice.name] } : { mode: toolChoice === "required" ? "ANY" : "AUTO" };
     return {
         tools: [{ functionDeclarations }],
         toolConfig: { functionCallingConfig },
@@ -649,7 +647,8 @@ function parseGeminiImagePayload(payload: GeminiPayload) {
 }
 
 export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
+    if (isAicyCanvasMode()) await requestAicyCanvasSession();
+    const requestConfig = resolveModelRequestConfig(config, config.imageModel || config.model);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     if (requestConfig.apiFormat === "gemini") {
         try {
@@ -685,7 +684,8 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
 }
 
 export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], mask?: ReferenceImage, options?: RequestOptions) {
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
+    if (isAicyCanvasMode()) await requestAicyCanvasSession();
+    const requestConfig = resolveModelRequestConfig(config, config.imageModel || config.model);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const requestPrompt = buildImageReferencePromptText(prompt, references);
     if (requestConfig.apiFormat === "gemini") {
@@ -724,17 +724,25 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
 }
 
 export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions) {
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
+    const requestConfig = resolveModelRequestConfig(config, config.textModel || config.model);
     try {
         if (requestConfig.apiFormat === "gemini") {
             const answer = (await requestGeminiStreamingResponse(requestConfig, toGeminiBody(requestConfig, messages), onDelta, options)).content || "没有返回内容";
             if (answer === "没有返回内容") onDelta(answer);
             return answer;
         }
-        const answer = (await requestStreamingResponse(requestConfig, {
-            model: requestConfig.model,
-            input: toResponseInput(withSystemMessage(requestConfig, messages)),
-        }, onDelta, options)).content || "没有返回内容";
+        const answer =
+            (
+                await requestStreamingResponse(
+                    requestConfig,
+                    {
+                        model: requestConfig.model,
+                        input: toResponseInput(withSystemMessage(requestConfig, messages)),
+                    },
+                    onDelta,
+                    options,
+                )
+            ).content || "没有返回内容";
         if (answer === "没有返回内容") onDelta(answer);
         return answer;
     } catch (error) {
@@ -743,18 +751,23 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
 }
 
 export async function requestToolResponse(config: AiConfig, messages: ResponseInputMessage[], tools: ResponseFunctionTool[], toolChoice: ToolChoice = "auto", onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
+    const requestConfig = resolveModelRequestConfig(config, config.textModel || config.model);
     try {
         if (requestConfig.apiFormat === "gemini") {
             return await requestGeminiStreamingResponse(requestConfig, toGeminiBody(requestConfig, messages, toGeminiToolOptions(tools, toolChoice)), onDelta, options);
         }
-        return await requestStreamingResponse(requestConfig, {
-            model: requestConfig.model,
-            input: toResponseInput(withSystemMessage(requestConfig, messages)),
-            tools: tools.map(toResponseTool),
-            tool_choice: toolChoice,
-            parallel_tool_calls: false,
-        }, onDelta, options);
+        return await requestStreamingResponse(
+            requestConfig,
+            {
+                model: requestConfig.model,
+                input: toResponseInput(withSystemMessage(requestConfig, messages)),
+                tools: tools.map(toResponseTool),
+                tool_choice: toolChoice,
+                parallel_tool_calls: false,
+            },
+            onDelta,
+            options,
+        );
     } catch (error) {
         throw new Error(readAxiosError(error, "请求失败"));
     }
@@ -762,6 +775,16 @@ export async function requestToolResponse(config: AiConfig, messages: ResponseIn
 
 export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat">) {
     try {
+        if (isAicyCanvasMode()) {
+            await requestAicyCanvasSession();
+            const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(chatgpt2apiBrowserBaseUrl(), "/models"), {
+                headers: chatgpt2apiAuthHeaders(),
+            });
+            return (response.data.data || [])
+                .map((model) => model.id)
+                .filter((id): id is string => Boolean(id))
+                .sort((a, b) => a.localeCompare(b));
+        }
         if (config.apiFormat === "gemini") {
             const response = await axios.get<GeminiPayload>(geminiApiUrl({ ...defaultGeminiConfig, ...config }), { headers: geminiHeaders({ ...defaultGeminiConfig, ...config }) });
             validateGeminiPayload(response.data);

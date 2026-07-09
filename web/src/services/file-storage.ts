@@ -1,5 +1,6 @@
 import localforage from "localforage";
 import { nanoid } from "nanoid";
+import { deleteAicyCanvasFile, isAicyCanvasMode, listAicyCanvasFiles, readAicyCanvasFile, saveAicyCanvasFile } from "@/services/aicy-integration";
 
 export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
 
@@ -9,7 +10,8 @@ const objectUrls = new Map<string, string>();
 export async function uploadMediaFile(input: string | Blob, prefix = "file"): Promise<UploadedFile> {
     const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
     const storageKey = `${prefix}:${nanoid()}`;
-    await store.setItem(storageKey, blob);
+    if (isAicyCanvasMode()) await saveAicyCanvasFile(storageKey, blob);
+    else await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     const meta = blob.type.startsWith("video/") ? await readVideoMeta(url) : blob.type.startsWith("audio/") ? await readAudioMeta(url) : {};
@@ -20,7 +22,7 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
     const cached = objectUrls.get(storageKey);
     if (cached) return cached;
-    const blob = await store.getItem<Blob>(storageKey);
+    const blob = isAicyCanvasMode() ? await readAicyCanvasFile(storageKey) : await store.getItem<Blob>(storageKey);
     if (!blob) return fallback;
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
@@ -28,11 +30,13 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
 }
 
 export async function getMediaBlob(storageKey: string) {
+    if (isAicyCanvasMode()) return readAicyCanvasFile(storageKey);
     return store.getItem<Blob>(storageKey);
 }
 
 export async function setMediaBlob(storageKey: string, blob: Blob) {
-    await store.setItem(storageKey, blob);
+    if (isAicyCanvasMode()) await saveAicyCanvasFile(storageKey, blob);
+    else await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     return url;
@@ -44,7 +48,8 @@ export async function deleteStoredMedia(keys: Iterable<string>) {
             const url = objectUrls.get(key);
             if (url) URL.revokeObjectURL(url);
             objectUrls.delete(key);
-            await store.removeItem(key);
+            if (isAicyCanvasMode()) await deleteAicyCanvasFile(key);
+            else await store.removeItem(key);
         }),
     );
 }
@@ -52,10 +57,16 @@ export async function deleteStoredMedia(keys: Iterable<string>) {
 export async function cleanupUnusedMedia(usedData: unknown) {
     const usedKeys = collectMediaStorageKeys(usedData);
     const unused: string[] = [];
-    await store.iterate((_value, key) => {
-        if (!usedKeys.has(key)) unused.push(key);
-    });
-    await Promise.all(unused.map((key) => store.removeItem(key)));
+    if (isAicyCanvasMode()) {
+        for (const key of await listAicyCanvasFiles()) {
+            if (!key.startsWith("image:") && !usedKeys.has(key)) unused.push(key);
+        }
+    } else {
+        await store.iterate((_value, key) => {
+            if (!usedKeys.has(key)) unused.push(key);
+        });
+    }
+    await deleteStoredMedia(unused);
 }
 
 export function collectMediaStorageKeys(value: unknown, keys = new Set<string>()) {

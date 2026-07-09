@@ -3,6 +3,8 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 
 import { nanoid } from "nanoid";
 import { localForageStorage } from "@/lib/localforage-storage";
+import { createAicyPersistStorage } from "@/services/aicy-remote-state";
+import { isAicyCanvasMode } from "@/services/aicy-integration";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 
@@ -58,6 +60,7 @@ const canvasStorage: PersistStorage<CanvasStore> = {
     },
     removeItem: (name) => localForageStorage.removeItem(name),
 };
+const persistedCanvasStorage: PersistStorage<CanvasStore> = isAicyCanvasMode() ? (createAicyPersistStorage("canvas") as PersistStorage<CanvasStore>) : canvasStorage;
 
 export const useCanvasStore = create<CanvasStore>()(
     persist(
@@ -121,7 +124,7 @@ export const useCanvasStore = create<CanvasStore>()(
         }),
         {
             name: CANVAS_STORE_KEY,
-            storage: canvasStorage,
+            storage: persistedCanvasStorage,
             partialize: (state) =>
                 ({
                     projects: state.projects,

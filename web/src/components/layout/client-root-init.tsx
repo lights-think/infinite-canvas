@@ -2,7 +2,9 @@ import type { ReactNode } from "react";
 import { useEffect, useRef } from "react";
 import { App } from "antd";
 
-import { createModelChannel, useConfigStore } from "@/stores/use-config-store";
+import { createManagedAicyConfig, createModelChannel, useConfigStore } from "@/stores/use-config-store";
+import { isAicyCanvasMode, requestAicyCanvasSession } from "@/services/aicy-integration";
+import { fetchChatgpt2apiModels } from "@/services/chatgpt2api-config";
 
 export function ClientRootInit({ children }: { children: ReactNode }) {
     const { message } = App.useApp();
@@ -13,6 +15,20 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
 
     useEffect(() => {
         if (handledConfigParams.current) return;
+        const aicyModeHint = window.location.search.includes("aicy=1");
+        if (aicyModeHint || isAicyCanvasMode()) {
+            handledConfigParams.current = true;
+            void requestAicyCanvasSession().then(async () => {
+                useConfigStore.setState((state) => ({ config: createManagedAicyConfig(state.config), isConfigOpen: false }));
+                try {
+                    const models = await fetchChatgpt2apiModels();
+                    useConfigStore.setState((state) => ({ config: createManagedAicyConfig(state.config, models), isConfigOpen: false }));
+                } catch (error) {
+                    console.warn(error);
+                }
+            });
+            return;
+        }
         const searchParams = new URLSearchParams(window.location.search);
         const baseUrl = searchParams.get("baseUrl") || searchParams.get("baseurl");
         const apiKey = searchParams.get("apiKey") || searchParams.get("apikey");

@@ -3,6 +3,8 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 
 import { nanoid } from "nanoid";
 import { localForageStorage } from "@/lib/localforage-storage";
+import { createAicyPersistStorage } from "@/services/aicy-remote-state";
+import { isAicyCanvasMode } from "@/services/aicy-integration";
 import { cleanupUnusedImages, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { cleanupUnusedMedia, resolveMediaUrl } from "@/services/file-storage";
 
@@ -62,6 +64,7 @@ const assetStorage: PersistStorage<AssetStore> = {
     setItem: (name, value) => localForageStorage.setItem(name, JSON.stringify(value)),
     removeItem: (name) => localForageStorage.removeItem(name),
 };
+const persistedAssetStorage: PersistStorage<AssetStore> = isAicyCanvasMode() ? (createAicyPersistStorage("assets") as PersistStorage<AssetStore>) : assetStorage;
 
 export const useAssetStore = create<AssetStore>()(
     persist(
@@ -95,7 +98,7 @@ export const useAssetStore = create<AssetStore>()(
         }),
         {
             name: ASSET_STORE_KEY,
-            storage: assetStorage,
+            storage: persistedAssetStorage,
             partialize: (state) => ({ assets: state.assets }) as StorageValue<AssetStore>["state"],
             onRehydrateStorage: () => () => {
                 useAssetStore.setState({ hydrated: true });

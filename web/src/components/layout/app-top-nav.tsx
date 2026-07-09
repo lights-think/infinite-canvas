@@ -10,10 +10,13 @@ import { cn } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
 import { useCanvasAgentStore } from "@/stores/canvas/use-canvas-agent-store";
 import { useConfigStore } from "@/stores/use-config-store";
+import { isAicyCanvasMode } from "@/services/aicy-integration";
 
 export function AppTopNav() {
-    const { pathname } = useLocation();
+    const { pathname, search } = useLocation();
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
+    const aicyMode = isAicyCanvasMode();
+    const aicySearch = aicyMode ? search : "";
     const autoConnectRef = useRef(false);
     const agentToken = useCanvasAgentStore((state) => state.token);
     const agentEnabled = useCanvasAgentStore((state) => state.enabled);
@@ -24,10 +27,10 @@ export function AppTopNav() {
     const activeToolSlug = navigationTools.some((tool) => tool.slug === slug) ? (slug as NavigationToolSlug) : undefined;
 
     useEffect(() => {
-        if (autoConnectRef.current || agentEnabled || agentConnected || !agentToken.trim()) return;
+        if (autoConnectRef.current || aicyMode || agentEnabled || agentConnected || !agentToken.trim()) return;
         autoConnectRef.current = true;
         connectAgent();
-    }, [agentConnected, agentEnabled, agentToken, connectAgent]);
+    }, [agentConnected, agentEnabled, agentToken, aicyMode, connectAgent]);
 
     return (
         <>
@@ -35,7 +38,10 @@ export function AppTopNav() {
                 <header className="sticky top-0 z-20 h-14 shrink-0 border-b border-stone-200 bg-background/90 backdrop-blur-xl dark:border-stone-800">
                     <div className="mx-auto flex h-full max-w-7xl items-stretch justify-between gap-5 px-6">
                         <div className="flex min-w-0 items-center">
-                            <Link to="/" className="flex h-full shrink-0 items-center gap-2 text-sm font-semibold leading-none tracking-tight text-stone-950 transition hover:text-stone-600 dark:text-stone-100 dark:hover:text-stone-300">
+                            <Link
+                                to={aicyMode ? { pathname: "/canvas", search: aicySearch } : "/"}
+                                className="flex h-full shrink-0 items-center gap-2 text-sm font-semibold leading-none tracking-tight text-stone-950 transition hover:text-stone-600 dark:text-stone-100 dark:hover:text-stone-300"
+                            >
                                 <span
                                     className="size-5 shrink-0 bg-current"
                                     style={{
@@ -63,7 +69,7 @@ export function AppTopNav() {
                                     return (
                                         <Link
                                             key={tool.slug}
-                                            to={`/${tool.slug}`}
+                                            to={{ pathname: `/${tool.slug}`, search: aicySearch }}
                                             className={cn(
                                                 "relative flex h-14 shrink-0 items-center gap-2 text-sm leading-6 transition after:absolute after:inset-x-0 after:bottom-0 after:h-px",
                                                 active
@@ -80,14 +86,14 @@ export function AppTopNav() {
                         </div>
 
                         <div className="my-auto flex h-9 min-w-0 items-center justify-end gap-2 justify-self-end whitespace-nowrap">
-                            <CodexStatusButton />
+                            {!aicyMode ? <CodexStatusButton /> : null}
                             <UserStatusActions />
                         </div>
                     </div>
                 </header>
             ) : null}
 
-            <MobileNavDrawer open={mobileNavOpen} activeToolSlug={activeToolSlug} onClose={() => setMobileNavOpen(false)} />
+            <MobileNavDrawer open={mobileNavOpen} activeToolSlug={activeToolSlug} search={aicySearch} onClose={() => setMobileNavOpen(false)} />
             <AppConfigModal />
         </>
     );

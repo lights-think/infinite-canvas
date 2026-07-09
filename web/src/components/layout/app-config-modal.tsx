@@ -4,11 +4,26 @@ import { useEffect, useState } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
 import { fetchChannelModels } from "@/services/api/image";
+import { isAicyCanvasMode } from "@/services/aicy-integration";
+import { chatgpt2apiConfiguredBaseUrl, chatgpt2apiKeyStatus } from "@/services/chatgpt2api-config";
 import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import { useCanvasAgentStore } from "@/stores/canvas/use-canvas-agent-store";
-import { createModelChannel, defaultBaseUrlForApiFormat, filterModelsByCapability, modelOptionLabel, modelOptionsFromChannels, normalizeModelOptionValue, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import {
+    createModelChannel,
+    defaultBaseUrlForApiFormat,
+    filterModelsByCapability,
+    modelOptionLabel,
+    modelOptionsFromChannels,
+    normalizeModelOptionValue,
+    useConfigStore,
+    type AiConfig,
+    type ApiCallFormat,
+    type ConfigTabKey,
+    type ModelCapability,
+    type ModelChannel,
+} from "@/stores/use-config-store";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -87,6 +102,11 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const connectAgent = useCanvasAgentStore((state) => state.connectAgent);
     const disconnectAgent = useCanvasAgentStore((state) => state.disconnectAgent);
     const modelOptions = config.models.map((model) => ({ label: modelOptionLabel(config, model), value: model }));
+    const managedAicyConfig = isAicyCanvasMode();
+    const managedChatgpt2apiBaseUrl = chatgpt2apiConfiguredBaseUrl();
+    const managedChatgpt2apiKeyStatus = chatgpt2apiKeyStatus();
+    const managedImageModelSummary = config.imageModels.map((model) => modelOptionLabel(config, model)).join("、") || "未同步";
+    const managedTextModelSummary = config.textModels.map((model) => modelOptionLabel(config, model)).join("、") || "未同步";
     const webdavReady = Boolean(webdav.url.trim());
     useEffect(() => setActiveTab(initialTab), [initialTab]);
 
@@ -95,6 +115,11 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     };
 
     const finishConfig = () => {
+        if (managedAicyConfig) {
+            setConfigDialogOpen(false);
+            clearPromptContinue();
+            return;
+        }
         const ready = config.channels.some((channel) => channel.baseUrl.trim() && channel.apiKey.trim() && channel.models.length);
         setConfigDialogOpen(false);
         if (!ready) return;
@@ -228,6 +253,74 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     };
 
     const toggleAgentConnection = () => (agentEnabled ? disconnectAgent({ connectError: "" }) : connectAgent());
+
+    if (managedAicyConfig) {
+        return (
+            <div className="space-y-4">
+                <section className="rounded-lg border border-stone-200 p-3 dark:border-stone-800">
+                    <div className="text-sm font-semibold">chatgpt2api 直连生图</div>
+                    <div className="mt-1 text-xs leading-5 text-stone-500">模型从 chatgpt2api /models 自动同步，Base URL 和 Key 来自 infinite-canvas 服务环境变量。</div>
+                    <dl className="mt-3 grid gap-2 text-xs text-stone-600 dark:text-stone-300">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <dt className="font-medium text-stone-900 dark:text-stone-100">Base URL</dt>
+                            <dd className="break-all rounded bg-stone-100 px-2 py-1 font-mono dark:bg-stone-900">{managedChatgpt2apiBaseUrl}</dd>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <dt className="font-medium text-stone-900 dark:text-stone-100">生图模型</dt>
+                            <dd className="break-all rounded bg-stone-100 px-2 py-1 dark:bg-stone-900">{managedImageModelSummary}</dd>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <dt className="font-medium text-stone-900 dark:text-stone-100">文本模型</dt>
+                            <dd className="break-all rounded bg-stone-100 px-2 py-1 dark:bg-stone-900">{managedTextModelSummary}</dd>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <dt className="font-medium text-stone-900 dark:text-stone-100">Key 状态</dt>
+                            <dd className="rounded bg-stone-100 px-2 py-1 dark:bg-stone-900">{managedChatgpt2apiKeyStatus === "browser" ? "已写入浏览器配置" : managedChatgpt2apiKeyStatus === "server" ? "已由 5190 服务端代理注入" : "未配置"}</dd>
+                        </div>
+                    </dl>
+                </section>
+                <Form layout="vertical" requiredMark={false}>
+                    <div className="grid gap-4 md:grid-cols-3">
+                        <Form.Item label="默认生图张数" className="mb-0">
+                            <Input type="number" min={1} max={15} value={config.count} onChange={(event) => updateConfig("count", event.target.value)} onBlur={(event) => updateConfig("count", normalizeImageCount(event.target.value))} />
+                        </Form.Item>
+                        <Form.Item label="画布默认生图张数" className="mb-0">
+                            <Input
+                                type="number"
+                                min={1}
+                                max={15}
+                                value={config.canvasImageCount}
+                                onChange={(event) => updateConfig("canvasImageCount", event.target.value)}
+                                onBlur={(event) => updateConfig("canvasImageCount", normalizeImageCount(event.target.value))}
+                            />
+                        </Form.Item>
+                        <Form.Item label="默认尺寸" className="mb-0">
+                            <Select
+                                value={config.size}
+                                options={[
+                                    { label: "Auto", value: "auto" },
+                                    { label: "1024 x 1024", value: "1024x1024" },
+                                    { label: "1536 x 1024", value: "1536x1024" },
+                                    { label: "1024 x 1536", value: "1024x1536" },
+                                ]}
+                                onChange={(value) => updateConfig("size", value)}
+                            />
+                        </Form.Item>
+                    </div>
+                    <Form.Item label="系统提示词" className="mt-4 mb-0">
+                        <Input.TextArea rows={4} value={config.systemPrompt} onChange={(event) => updateConfig("systemPrompt", event.target.value)} />
+                    </Form.Item>
+                </Form>
+                {showDoneButton ? (
+                    <div className="flex justify-end">
+                        <Button type="primary" onClick={finishConfig}>
+                            完成
+                        </Button>
+                    </div>
+                ) : null}
+            </div>
+        );
+    }
 
     return (
         <>
@@ -453,7 +546,12 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                             <Input prefix={<Link2 className="mr-1 size-4 text-stone-400" />} value={agentUrl} placeholder="http://127.0.0.1:17371" onChange={(event) => updateAgentConfig({ url: event.target.value })} />
                                         </Form.Item>
                                         <Form.Item label="Connect token" className="mb-4">
-                                            <Input.Password prefix={<KeyRound className="mr-1 size-4 text-stone-400" />} value={agentToken} placeholder="自动发现，或手动填入 Connect token" onChange={(event) => updateAgentConfig({ token: event.target.value })} />
+                                            <Input.Password
+                                                prefix={<KeyRound className="mr-1 size-4 text-stone-400" />}
+                                                value={agentToken}
+                                                placeholder="自动发现，或手动填入 Connect token"
+                                                onChange={(event) => updateAgentConfig({ token: event.target.value })}
+                                            />
                                         </Form.Item>
                                     </div>
                                     {agentConnectError ? <div className="mb-3 rounded-md border border-red-200 px-3 py-2 text-xs text-red-600 dark:border-red-900/60">{agentConnectError}</div> : null}

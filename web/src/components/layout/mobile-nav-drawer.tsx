@@ -7,10 +7,11 @@ import { cn } from "@/lib/utils";
 type MobileNavDrawerProps = {
     open: boolean;
     activeToolSlug?: NavigationToolSlug;
+    search?: string;
     onClose: () => void;
 };
 
-export function MobileNavDrawer({ open, activeToolSlug, onClose }: MobileNavDrawerProps) {
+export function MobileNavDrawer({ open, activeToolSlug, search = "", onClose }: MobileNavDrawerProps) {
     return (
         <Drawer title="导航" placement="left" size={280} open={open} onClose={onClose} className="md:hidden">
             <div className="space-y-1">
@@ -20,7 +21,7 @@ export function MobileNavDrawer({ open, activeToolSlug, onClose }: MobileNavDraw
                     return (
                         <Link
                             key={tool.slug}
-                            to={`/${tool.slug}`}
+                            to={{ pathname: `/${tool.slug}`, search }}
                             onClick={onClose}
                             className={cn(
                                 "flex items-center gap-3 rounded-lg px-3 py-3 text-base transition",

@@ -1,11 +1,12 @@
 import { ArrowRight } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { App, Button, Image, Tag } from "antd";
-import { useNavigate } from "react-router-dom";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { fetchPrompts, type Prompt } from "@/services/api/prompts";
 import { navigationTools } from "@/constant/navigation-tools";
 import { cn } from "@/lib/utils";
+import { isAicyCanvasMode } from "@/services/aicy-integration";
 
 function Highlighter({ action, color, children }: { action: "highlight" | "underline"; color: string; children: ReactNode }) {
     return (
@@ -22,17 +23,24 @@ function Highlighter({ action, color, children }: { action: "highlight" | "under
 
 export default function IndexPage() {
     const { message } = App.useApp();
+    const location = useLocation();
     const navigate = useNavigate();
+    const aicyMode = isAicyCanvasMode();
     const [primaryTool] = navigationTools;
     const [promptShowcase, setPromptShowcase] = useState<Prompt[]>([]);
     const [previewIndex, setPreviewIndex] = useState(0);
     const [previewOpen, setPreviewOpen] = useState(false);
 
     useEffect(() => {
+        if (aicyMode) return;
         void fetchPrompts({ pageSize: 12 })
             .then((data) => setPromptShowcase(data.items))
             .catch((error) => message.error(error instanceof Error ? error.message : "获取提示词失败"));
-    }, [message]);
+    }, [aicyMode, message]);
+
+    if (aicyMode) {
+        return <Navigate to={{ pathname: "/canvas", search: location.search }} replace />;
+    }
 
     return (
         <main className="relative h-full overflow-y-auto bg-background bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] [background-size:16px_16px] text-stone-950 dark:bg-[radial-gradient(rgba(245,245,244,.18)_1px,transparent_1px)] dark:text-stone-100">

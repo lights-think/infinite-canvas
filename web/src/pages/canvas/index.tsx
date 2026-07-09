@@ -27,10 +27,9 @@ export default function CanvasPage() {
     const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
 
     const mode = searchParams.get("mode");
-    const agentMode = mode === "new" || mode === "recent" || mode === "choose";
-    const agentQuery = agentMode ? `?${searchParams.toString()}` : "";
+    const routeQuery = searchParams.toString();
     const enterProject = (id: string) => {
-        navigate(`/canvas/${id}${agentQuery}`);
+        navigate(`/canvas/${id}${routeQuery ? `?${routeQuery}` : ""}`);
     };
     const createAndEnter = () => enterProject(createProject(`无限画布 ${projects.length + 1}`));
     const importCanvas = async (file?: File) => {
@@ -78,7 +77,16 @@ export default function CanvasPage() {
                     <div className="flex items-center gap-2">
                         {selectedIds.length ? (
                             <>
-                                <Button disabled={!hydrated} icon={<Download className="size-4" />} onClick={() => void exportCanvasProjects(projects.filter((project) => selectedIds.includes(project.id)), `无限画布-${selectedIds.length}个项目`)}>
+                                <Button
+                                    disabled={!hydrated}
+                                    icon={<Download className="size-4" />}
+                                    onClick={() =>
+                                        void exportCanvasProjects(
+                                            projects.filter((project) => selectedIds.includes(project.id)),
+                                            `无限画布-${selectedIds.length}个项目`,
+                                        )
+                                    }
+                                >
                                     导出选中
                                 </Button>
                                 <Button disabled={!hydrated} onClick={() => setDeleteIds(selectedIds)}>
