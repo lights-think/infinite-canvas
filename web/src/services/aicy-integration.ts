@@ -1,17 +1,29 @@
 export type AicyCanvasSession = {
+    aiBasePath: string;
     expiresAt: number;
     filesPath: string;
     gatewayUrl: string;
+    protocolVersion: 2;
     statePath: string;
+    stateWritePath: string;
     token: string;
 };
 
-type AicyCanvasSessionMessage = Partial<AicyCanvasSession> & {
+type AicyCanvasSessionMessage = Omit<Partial<AicyCanvasSession>, "protocolVersion"> & {
+    protocolVersion?: number;
     type?: string;
 };
 
 const SESSION_REFRESH_SKEW_MS = 60_000;
 const SESSION_WAIT_TIMEOUT_MS = 15_000;
+const AICY_CANVAS_AI_BASE_PATH = "/api/infinite-canvas/ai/v1";
+const AICY_CANVAS_STATE_WRITE_PATH = "/api/infinite-canvas/state/cas";
+const AICY_CANVAS_AI_METHODS = new Map([
+    ["/models", "GET"],
+    ["/responses", "POST"],
+    ["/images/generations", "POST"],
+    ["/images/edits", "POST"],
+]);
 let session: AicyCanvasSession | null = null;
 let listenerStarted = false;
 let pendingSessionRequest: Promise<AicyCanvasSession> | null = null;
@@ -19,7 +31,13 @@ const waiters = new Set<(session: AicyCanvasSession) => void>();
 
 export function isAicyCanvasMode() {
     if (typeof window === "undefined") return false;
-    return new URLSearchParams(window.location.search).get("aicy") === "1";
+    if (new URLSearchParams(window.location.search).get("aicy") !== "1") return false;
+    // 托管模式必须由带明确双端 origin 的 Aicy iframe 启动，禁止通配 parent 消息源。
+    return Boolean(queryOrigin("aicyParentOrigin") && queryOrigin("aicyGateway"));
+}
+
+export function isAicyManagedCanvasMode() {
+    return isAicyCanvasMode();
 }
 
 function queryOrigin(name: string) {
@@ -33,7 +51,7 @@ function queryOrigin(name: string) {
 }
 
 function parentOrigin() {
-    return queryOrigin("aicyParentOrigin") || "*";
+    return queryOrigin("aicyParentOrigin");
 }
 
 function aicyAppOrigin() {
@@ -44,16 +62,22 @@ function defaultGatewayUrl() {
     return queryOrigin("aicyGateway") || (typeof window !== "undefined" ? window.location.origin : "");
 }
 
-function normalizeSessionMessage(message: AicyCanvasSessionMessage): AicyCanvasSession | null {
+export function normalizeAicyCanvasSessionMessage(message: AicyCanvasSessionMessage): AicyCanvasSession | null {
     if (message.type !== "aicy.canvas.session") return null;
     if (!message.token || !message.expiresAt) return null;
+    if (message.protocolVersion !== 2) return null;
+    if (message.aiBasePath !== AICY_CANVAS_AI_BASE_PATH) return null;
+    if (message.stateWritePath !== AICY_CANVAS_STATE_WRITE_PATH) return null;
     const gatewayUrl = message.gatewayUrl || defaultGatewayUrl();
     if (!gatewayUrl) return null;
     return {
+        aiBasePath: message.aiBasePath,
         expiresAt: Number(message.expiresAt),
         filesPath: message.filesPath || "/api/infinite-canvas/files",
         gatewayUrl,
+        protocolVersion: 2,
         statePath: message.statePath || "/api/infinite-canvas/state",
+        stateWritePath: message.stateWritePath,
         token: message.token,
     };
 }
@@ -66,9 +90,10 @@ function startSessionListener() {
     if (listenerStarted || typeof window === "undefined") return;
     listenerStarted = true;
     window.addEventListener("message", (event: MessageEvent<AicyCanvasSessionMessage>) => {
+        if (event.source !== window.parent) return;
         const expectedParentOrigin = parentOrigin();
-        if (expectedParentOrigin !== "*" && event.origin !== expectedParentOrigin) return;
-        const nextSession = normalizeSessionMessage(event.data || {});
+        if (!expectedParentOrigin || event.origin !== expectedParentOrigin) return;
+        const nextSession = normalizeAicyCanvasSessionMessage(event.data || {});
         if (!nextSession) return;
         session = nextSession;
         for (const resolve of waiters) resolve(nextSession);
@@ -125,24 +150,34 @@ export async function requestAicyCanvasSession(forceRefresh = false) {
     return pendingSessionRequest;
 }
 
-function aicyApiUrl(path: string) {
-    const activeSession = session;
-    const gatewayUrl = activeSession?.gatewayUrl || defaultGatewayUrl();
-    return `${gatewayUrl.replace(/\/+$/, "")}${path}`;
+function aicyApiUrl(activeSession: AicyCanvasSession, path: string) {
+    return `${activeSession.gatewayUrl.replace(/\/+$/, "")}${path}`;
 }
 
-export async function aicyFetch(path: string, init: RequestInit = {}) {
+async function aicySessionFetch(pathForSession: (value: AicyCanvasSession) => string, init: RequestInit) {
     const activeSession = await requestAicyCanvasSession();
     if (!activeSession) throw new Error("Aicy canvas mode is not enabled.");
-    const headers = new Headers(init.headers);
-    headers.set("Authorization", `Bearer ${activeSession.token}`);
-    const response = await fetch(aicyApiUrl(path), { ...init, headers });
+    const requestWithSession = (value: AicyCanvasSession) => {
+        const headers = new Headers(init.headers);
+        headers.set("Authorization", `Bearer ${value.token}`);
+        return fetch(aicyApiUrl(value, pathForSession(value)), { ...init, headers });
+    };
+    const response = await requestWithSession(activeSession);
     if (response.status !== 401) return response;
 
     const refreshed = await requestAicyCanvasSession(true);
     if (!refreshed) return response;
-    headers.set("Authorization", `Bearer ${refreshed.token}`);
-    return fetch(aicyApiUrl(path), { ...init, headers });
+    return requestWithSession(refreshed);
+}
+
+export async function aicyFetch(path: string, init: RequestInit = {}) {
+    return aicySessionFetch(() => path, init);
+}
+
+export async function aicyAiFetch(path: string, init: RequestInit = {}) {
+    const method = (init.method || "GET").toUpperCase();
+    if (AICY_CANVAS_AI_METHODS.get(path) !== method) throw new Error("Unsupported Aicy canvas AI route.");
+    return aicySessionFetch((activeSession) => `${activeSession.aiBasePath}${path}`, init);
 }
 
 export async function readAicyCanvasFile(storageKey: string) {

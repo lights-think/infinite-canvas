@@ -1,5 +1,6 @@
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 import { ArrowLeft, BookOpen, Keyboard, Settings2 } from "lucide-react";
+import { App } from "antd";
 
 import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
 import { GitHubLink } from "@/components/layout/github-link";
@@ -7,6 +8,7 @@ import { VersionReleaseModal } from "@/components/layout/version-release-modal";
 import { DOCS_URL } from "@/constant/env";
 import { cn } from "@/lib/utils";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { AicyRemoteStateConflictError, flushAicyRemoteState, returnToAicyAfterFlush } from "@/services/aicy-remote-state";
 import { aicyIconUrl, isAicyCanvasMode, requestAicyReturnToAicy } from "@/services/aicy-integration";
 import { useConfigStore } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -54,9 +56,11 @@ export function UserStatusActions({ showConfig = true, variant = "default", onOp
 }
 
 function AicyReturnAction({ variant, style }: { variant: "default" | "canvas"; style?: CSSProperties }) {
+    const { message } = App.useApp();
     const theme = useThemeStore((state) => state.theme);
     const canvasTheme = canvasThemes[theme];
     const iconUrl = aicyIconUrl();
+    const [returning, setReturning] = useState(false);
     const buttonStyle: CSSProperties | undefined =
         variant === "canvas"
             ? {
@@ -66,6 +70,21 @@ function AicyReturnAction({ variant, style }: { variant: "default" | "canvas"; s
                   boxShadow: "0 10px 30px rgba(28,25,23,.10)",
               }
             : style;
+    async function handleReturnToAicy() {
+        if (returning) return;
+        setReturning(true);
+        try {
+            await returnToAicyAfterFlush(flushAicyRemoteState, () => {
+                requestAicyReturnToAicy();
+            });
+        } catch (error) {
+            console.error("[Aicy Canvas] failed to flush remote state before return", error);
+            message.error(error instanceof AicyRemoteStateConflictError ? "画布在其他窗口中已更新，请刷新或重新打开画布后再试" : "画布保存失败，请稍后重试");
+        } finally {
+            setReturning(false);
+        }
+    }
+
     return (
         <button
             type="button"
@@ -74,7 +93,8 @@ function AicyReturnAction({ variant, style }: { variant: "default" | "canvas"; s
                 variant === "canvas" && "h-10 rounded-xl border px-3",
             )}
             style={buttonStyle}
-            onClick={requestAicyReturnToAicy}
+            disabled={returning}
+            onClick={() => void handleReturnToAicy()}
             aria-label="回到Aicy"
             title="回到Aicy"
         >

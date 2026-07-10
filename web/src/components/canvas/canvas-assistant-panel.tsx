@@ -4,7 +4,7 @@ import { Bot, Copy, Cpu, History, PanelRightClose, Plus, Settings2, Trash2, X } 
 import { Button, Modal, Segmented, Switch, Tooltip } from "antd";
 import { motion } from "motion/react";
 
-import { modelOptionName, normalizeModelOptionValue, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { modelOptionName, normalizeModelOptionValue, resolveModelChannel, resolveModelRequestConfig, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { nanoid } from "nanoid";
 import { requestToolResponse, type ResponseFunctionTool, type ResponseInputMessage, type ResponseToolCall } from "@/services/api/image";
@@ -22,6 +22,7 @@ import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { CanvasNodeType, type CanvasAssistantMessage, type CanvasAssistantReference, type CanvasAssistantSession, type CanvasNodeData } from "@/types/canvas";
 import { useCanvasAgentStore } from "@/stores/canvas/use-canvas-agent-store";
 import { summarizeCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
+import { isAicyManagedCanvasMode } from "@/services/aicy-integration";
 
 export const CANVAS_AGENT_PANEL_MOTION_MS = 500;
 const PANEL_MOTION_SECONDS = CANVAS_AGENT_PANEL_MOTION_MS / 1000;
@@ -665,6 +666,8 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, snapshot, session
 function AgentTextModelPicker({ config, value, onChange }: { config: AiConfig; value: string; onChange: (model: string) => void }) {
     const options = useMemo(() => Array.from(new Set([value, ...selectableModelsByCapability(config, "text")].filter(Boolean))), [config, value]);
     const current = value || "";
+    const requestModel = current && isAicyManagedCanvasMode() ? resolveModelRequestConfig(config, current).model : "";
+    const fallbackModel = requestModel && requestModel !== modelOptionName(current) ? requestModel : "";
     return (
         <Select value={current} onValueChange={onChange}>
             <SelectTrigger
@@ -676,7 +679,7 @@ function AgentTextModelPicker({ config, value, onChange }: { config: AiConfig; v
             >
                 <AgentModelIcon model={current} />
                 <span className="min-w-0 truncate">{current ? modelOptionName(current) : "选择文本模型"}</span>
-                {current ? <span className="shrink-0 opacity-55">{resolveModelChannel(config, current).name}</span> : null}
+                {fallbackModel ? <span className="shrink-0 opacity-55">由 {fallbackModel} 执行</span> : current ? <span className="shrink-0 opacity-55">{resolveModelChannel(config, current).name}</span> : null}
             </SelectTrigger>
             <SelectContent data-canvas-no-zoom className="z-[1200] w-72 max-w-[calc(100vw-24px)]" position="popper" align="start" side="bottom" sideOffset={6} onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
                 {options.length ? (

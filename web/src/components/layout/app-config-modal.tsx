@@ -4,8 +4,7 @@ import { useEffect, useState } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
 import { fetchChannelModels } from "@/services/api/image";
-import { isAicyCanvasMode } from "@/services/aicy-integration";
-import { chatgpt2apiConfiguredBaseUrl, chatgpt2apiKeyStatus } from "@/services/chatgpt2api-config";
+import { isAicyManagedCanvasMode } from "@/services/aicy-integration";
 import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
@@ -18,6 +17,7 @@ import {
     modelOptionsFromChannels,
     normalizeModelOptionValue,
     useConfigStore,
+    useEffectiveConfig,
     type AiConfig,
     type ApiCallFormat,
     type ConfigTabKey,
@@ -85,6 +85,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const [webdavSyncStatus, setWebdavSyncStatus] = useState("");
     const [webdavDomainProgress, setWebdavDomainProgress] = useState(createWebdavDomainProgress);
     const config = useConfigStore((state) => state.config);
+    const effectiveConfig = useEffectiveConfig();
     const webdav = useConfigStore((state) => state.webdav);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const updateWebdavConfig = useConfigStore((state) => state.updateWebdavConfig);
@@ -102,11 +103,10 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const connectAgent = useCanvasAgentStore((state) => state.connectAgent);
     const disconnectAgent = useCanvasAgentStore((state) => state.disconnectAgent);
     const modelOptions = config.models.map((model) => ({ label: modelOptionLabel(config, model), value: model }));
-    const managedAicyConfig = isAicyCanvasMode();
-    const managedChatgpt2apiBaseUrl = chatgpt2apiConfiguredBaseUrl();
-    const managedChatgpt2apiKeyStatus = chatgpt2apiKeyStatus();
-    const managedImageModelSummary = config.imageModels.map((model) => modelOptionLabel(config, model)).join("、") || "未同步";
-    const managedTextModelSummary = config.textModels.map((model) => modelOptionLabel(config, model)).join("、") || "未同步";
+    const managedAicyConfig = isAicyManagedCanvasMode();
+    // Aicy 会话初始化完成前，持久化状态可能仍含旧模型；托管摘要始终展示运行时白名单。
+    const managedImageModelSummary = effectiveConfig.imageModels.map((model) => modelOptionLabel(effectiveConfig, model)).join("、") || "未同步";
+    const managedTextModelSummary = effectiveConfig.textModels.map((model) => modelOptionLabel(effectiveConfig, model)).join("、") || "未同步";
     const webdavReady = Boolean(webdav.url.trim());
     useEffect(() => setActiveTab(initialTab), [initialTab]);
 
@@ -258,12 +258,12 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         return (
             <div className="space-y-4">
                 <section className="rounded-lg border border-stone-200 p-3 dark:border-stone-800">
-                    <div className="text-sm font-semibold">chatgpt2api 直连生图</div>
-                    <div className="mt-1 text-xs leading-5 text-stone-500">模型从 chatgpt2api /models 自动同步，Base URL 和 Key 来自 infinite-canvas 服务环境变量。</div>
+                    <div className="text-sm font-semibold">Aicy 托管生图</div>
+                    <div className="mt-1 text-xs leading-5 text-stone-500">模型经 Aicy Gateway 自动同步；浏览器只使用短期画布会话，不持有 chatgpt2api Key。</div>
                     <dl className="mt-3 grid gap-2 text-xs text-stone-600 dark:text-stone-300">
                         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                            <dt className="font-medium text-stone-900 dark:text-stone-100">Base URL</dt>
-                            <dd className="break-all rounded bg-stone-100 px-2 py-1 font-mono dark:bg-stone-900">{managedChatgpt2apiBaseUrl}</dd>
+                            <dt className="font-medium text-stone-900 dark:text-stone-100">请求通道</dt>
+                            <dd className="break-all rounded bg-stone-100 px-2 py-1 dark:bg-stone-900">Aicy Gateway 会话路由</dd>
                         </div>
                         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                             <dt className="font-medium text-stone-900 dark:text-stone-100">生图模型</dt>
@@ -275,7 +275,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                         </div>
                         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                             <dt className="font-medium text-stone-900 dark:text-stone-100">Key 状态</dt>
-                            <dd className="rounded bg-stone-100 px-2 py-1 dark:bg-stone-900">{managedChatgpt2apiKeyStatus === "browser" ? "已写入浏览器配置" : managedChatgpt2apiKeyStatus === "server" ? "已由 5190 服务端代理注入" : "未配置"}</dd>
+                            <dd className="rounded bg-stone-100 px-2 py-1 dark:bg-stone-900">仅 Aicy Gateway 服务端持有</dd>
                         </div>
                     </dl>
                 </section>

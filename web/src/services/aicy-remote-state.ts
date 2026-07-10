@@ -1,105 +1,82 @@
 import type { PersistStorage, StorageValue } from "zustand/middleware";
 
 import { aicyFetch, isAicyCanvasMode, requestAicyCanvasSession } from "@/services/aicy-integration";
+import { createAicyRemoteStateCoordinator, createAicyRemoteStateHttpTransport, normalizeAicyRemoteState, resolveAicyRemoteStatePath, type AicyRemoteSaveOptions, type AicyStateSlice } from "@/services/aicy-remote-state-core";
 
-type AicyStateSlice = "canvas" | "assets" | "preferences";
-type AicyRemoteState = {
-    version: 1;
-    projects: unknown[];
-    assets: unknown[];
-    preferences: Record<string, unknown>;
-    updatedAt?: number | null;
-};
+export { AicyRemoteStateConflictError, returnToAicyAfterFlush } from "@/services/aicy-remote-state-core";
 
-const defaultRemoteState: AicyRemoteState = {
-    version: 1,
-    projects: [],
-    assets: [],
-    preferences: {},
-    updatedAt: null,
-};
+let lifecycleHandlersStarted = false;
 
-let cachedState: AicyRemoteState | null = null;
-let loadPromise: Promise<AicyRemoteState> | null = null;
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
-function normalizeRemoteState(value: unknown): AicyRemoteState {
-    const source = value && typeof value === "object" && !Array.isArray(value) ? (value as Partial<AicyRemoteState>) : {};
-    return {
-        version: 1,
-        projects: Array.isArray(source.projects) ? source.projects : [],
-        assets: Array.isArray(source.assets) ? source.assets : [],
-        preferences: source.preferences && typeof source.preferences === "object" && !Array.isArray(source.preferences) ? source.preferences : {},
-        updatedAt: typeof source.updatedAt === "number" ? source.updatedAt : null,
+const remoteStateTransport = createAicyRemoteStateHttpTransport(async (init) => {
+    const activeSession = await requestAicyCanvasSession();
+    if (!activeSession) throw new Error("Aicy canvas session is unavailable.");
+    const path = resolveAicyRemoteStatePath(activeSession.statePath, activeSession.stateWritePath, init.method);
+    return aicyFetch(path, init);
+});
+
+const remoteStateCoordinator = createAicyRemoteStateCoordinator({
+    async load() {
+        if (!isAicyCanvasMode()) return normalizeAicyRemoteState(null);
+        return remoteStateTransport.load();
+    },
+    save: remoteStateTransport.save,
+    onBackgroundError(error) {
+        console.error("[Aicy Canvas] remote state save failed", error);
+    },
+});
+
+export function flushAicyRemoteState(options: AicyRemoteSaveOptions = {}) {
+    return remoteStateCoordinator.flush(options);
+}
+
+function startLifecycleSaveHandlers() {
+    if (lifecycleHandlersStarted || typeof window === "undefined") return;
+    lifecycleHandlersStarted = true;
+    const flushBestEffort = () => {
+        // 页面卸载不能可靠等待异步完成；keepalive 只作为最后一次尽力提交。
+        void flushAicyRemoteState({ keepalive: true }).catch((error) => {
+            console.error("[Aicy Canvas] lifecycle state flush failed", error);
+        });
     };
+    window.addEventListener("pagehide", flushBestEffort);
+    window.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") flushBestEffort();
+    });
 }
 
-async function loadAicyRemoteState() {
-    if (!isAicyCanvasMode()) return defaultRemoteState;
-    if (cachedState) return cachedState;
-    if (!loadPromise) {
-        loadPromise = (async () => {
-            const activeSession = await requestAicyCanvasSession();
-            if (!activeSession) return defaultRemoteState;
-            const response = await aicyFetch(activeSession.statePath, { method: "GET" });
-            if (!response.ok) throw new Error(await response.text());
-            cachedState = normalizeRemoteState(await response.json());
-            return cachedState;
-        })().finally(() => {
-            loadPromise = null;
-        });
-    }
-    return loadPromise;
+function incomingState(value: StorageValue<unknown>) {
+    return isRecord(value.state) ? value.state : {};
 }
 
-function scheduleSave(nextState: AicyRemoteState) {
-    cachedState = nextState;
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(async () => {
-        saveTimer = null;
-        const activeSession = await requestAicyCanvasSession();
-        if (!activeSession || !cachedState) return;
-        const response = await aicyFetch(activeSession.statePath, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(cachedState),
-        });
-        if (!response.ok) throw new Error(await response.text());
-        cachedState = normalizeRemoteState(await response.json());
-    }, 400);
+function storedValueForSlice(slice: AicyStateSlice, value: unknown[] | Record<string, unknown>) {
+    if (slice === "canvas") return { projects: value };
+    if (slice === "assets") return { assets: value };
+    return { config: value };
 }
 
-function valueForSlice(slice: AicyStateSlice, state: AicyRemoteState) {
-    if (slice === "canvas") return { projects: state.projects };
-    if (slice === "assets") return { assets: state.assets };
-    return { config: state.preferences };
-}
-
-function updateSlice(slice: AicyStateSlice, state: AicyRemoteState, value: StorageValue<unknown>) {
-    const incoming = value.state && typeof value.state === "object" ? (value.state as Record<string, unknown>) : {};
-    if (slice === "canvas") {
-        return { ...state, projects: Array.isArray(incoming.projects) ? incoming.projects : [] };
-    }
-    if (slice === "assets") {
-        return { ...state, assets: Array.isArray(incoming.assets) ? incoming.assets : [] };
-    }
-    const config = incoming.config && typeof incoming.config === "object" && !Array.isArray(incoming.config) ? incoming.config : {};
-    return { ...state, preferences: config as Record<string, unknown> };
+function nextSliceValue(slice: AicyStateSlice, value: StorageValue<unknown>) {
+    const incoming = incomingState(value);
+    if (slice === "canvas") return Array.isArray(incoming.projects) ? incoming.projects : [];
+    if (slice === "assets") return Array.isArray(incoming.assets) ? incoming.assets : [];
+    return isRecord(incoming.config) ? incoming.config : {};
 }
 
 export function createAicyPersistStorage<T>(slice: AicyStateSlice): PersistStorage<T> {
+    startLifecycleSaveHandlers();
     return {
         getItem: async () => {
-            const state = await loadAicyRemoteState();
-            return { state: valueForSlice(slice, state) as T, version: 0 };
+            const value = await remoteStateCoordinator.readSlice(slice);
+            return { state: storedValueForSlice(slice, value) as T, version: 0 };
         },
         setItem: async (_name, value) => {
-            const state = await loadAicyRemoteState();
-            scheduleSave(updateSlice(slice, state, value as StorageValue<unknown>));
+            await remoteStateCoordinator.writeSlice(slice, nextSliceValue(slice, value as StorageValue<unknown>));
         },
         removeItem: async () => {
-            const state = await loadAicyRemoteState();
-            scheduleSave(updateSlice(slice, state, { state: {}, version: 0 }));
+            await remoteStateCoordinator.writeSlice(slice, slice === "preferences" ? {} : []);
         },
     };
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { App, Modal, Segmented, Tooltip } from "antd";
 import { Download, Ellipsis, FolderPlus, Image as ImageIcon, Info, MessageSquare, Minus, Music2, Pencil, Plus, RefreshCw, Settings2, Trash2, Upload, Video } from "lucide-react";
 
@@ -9,10 +9,12 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
 import { ImageToolSettingsModal, type ImageToolbarSettingsTool } from "./canvas-image-toolbar-settings-modal";
 import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, readImageQuickToolsConfig, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
+import { canvasHoverToolbarMaxWidth, clampCanvasHoverToolbarCenter } from "./canvas-hover-toolbar-layout";
 
 type CanvasNodeHoverToolbarProps = {
     node: CanvasNodeData | null;
     viewport: ViewportTransform;
+    viewportWidth: number;
     onKeep: (nodeId: string) => void;
     onLeave: () => void;
     onInfo: (node: CanvasNodeData) => void;
@@ -50,6 +52,7 @@ type ToolbarTool = {
 export function CanvasNodeHoverToolbar({
     node,
     viewport,
+    viewportWidth,
     onKeep,
     onLeave,
     onInfo,
@@ -78,6 +81,8 @@ export function CanvasNodeHoverToolbar({
     const [draftImageToolIds, setDraftImageToolIds] = useState<ImageQuickToolId[]>(defaultImageQuickToolIds);
     const [draftShowImageToolLabels, setDraftShowImageToolLabels] = useState(true);
     const [imageToolSettingsOpen, setImageToolSettingsOpen] = useState(false);
+    const toolbarRef = useRef<HTMLDivElement>(null);
+    const [toolbarWidth, setToolbarWidth] = useState(0);
     const { message } = App.useApp();
     const copyText = useCopyText();
 
@@ -98,10 +103,22 @@ export function CanvasNodeHoverToolbar({
         setImageToolSettingsOpen(false);
     }, [node?.id]);
 
+    useEffect(() => {
+        const toolbar = toolbarRef.current;
+        if (!node || !toolbar) return;
+        const sync = () => setToolbarWidth(toolbar.getBoundingClientRect().width);
+        sync();
+        const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(sync);
+        observer?.observe(toolbar);
+        return () => observer?.disconnect();
+    }, [node?.id]);
+
     if (!node) return null;
 
     const activeNode = node;
-    const left = viewport.x + (node.position.x + node.width / 2) * viewport.k;
+    const preferredLeft = viewport.x + (node.position.x + node.width / 2) * viewport.k;
+    const maxWidth = canvasHoverToolbarMaxWidth(viewportWidth);
+    const left = clampCanvasHoverToolbarCenter(preferredLeft, toolbarWidth || maxWidth, viewportWidth);
     const top = viewport.y + node.position.y * viewport.k - 14;
     const isImage = node.type === CanvasNodeType.Image;
     const isVideo = node.type === CanvasNodeType.Video;
@@ -178,8 +195,9 @@ export function CanvasNodeHoverToolbar({
     return (
         <>
             <div
-                className="absolute z-[70] flex h-12 -translate-x-1/2 -translate-y-full items-center overflow-visible rounded-[18px] border border-black/10 bg-white text-[15px] text-[#242529] shadow-[0_8px_28px_rgba(15,23,42,.12)]"
-                style={{ left, top }}
+                ref={toolbarRef}
+                className="absolute z-[70] flex min-h-10 -translate-x-1/2 -translate-y-full flex-wrap items-center gap-y-0.5 overflow-visible rounded-[14px] border border-black/10 bg-white p-1 text-[13px] text-[#242529] shadow-[0_8px_28px_rgba(15,23,42,.12)] [&_svg]:size-3.5"
+                style={{ left, top, width: "max-content", maxWidth }}
                 onMouseEnter={() => onKeep(node.id)}
                 onMouseLeave={() => {
                     if (!imageToolSettingsOpen) onLeave();
@@ -282,8 +300,8 @@ function ToolbarAction({ title, label, icon, onClick, showLabel, active = false,
     const hasText = showLabel && Boolean(label);
     return (
         <Tooltip title={title} placement="top" mouseEnterDelay={0.2} color="#ffffff" styles={{ root: { color: "#242529", boxShadow: "0 8px 24px rgba(15,23,42,.16)", fontSize: 13, fontWeight: 500 } }}>
-            <button type="button" className={`group relative flex h-12 items-center whitespace-nowrap px-1.5 ${danger ? "text-[#ef4444]" : ""}`} onClick={onClick} aria-label={title}>
-                <span className={`flex h-9 items-center ${hasText ? "gap-2 px-2.5" : "justify-center px-2"} rounded-lg transition group-hover:bg-[#f0f0f1] ${active ? "bg-[#eeeeef]" : ""}`}>
+            <button type="button" className={`group relative flex h-8 items-center whitespace-nowrap px-0.5 ${danger ? "text-[#ef4444]" : ""}`} onClick={onClick} aria-label={title}>
+                <span className={`flex h-8 items-center ${hasText ? "gap-1.5 px-2" : "justify-center px-1.5"} rounded-lg transition group-hover:bg-[#f0f0f1] ${active ? "bg-[#eeeeef]" : ""}`}>
                     {icon}
                     {hasText ? <span>{label}</span> : null}
                 </span>

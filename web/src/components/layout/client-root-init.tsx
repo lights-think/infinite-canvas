@@ -15,8 +15,7 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
 
     useEffect(() => {
         if (handledConfigParams.current) return;
-        const aicyModeHint = window.location.search.includes("aicy=1");
-        if (aicyModeHint || isAicyCanvasMode()) {
+        if (isAicyCanvasMode()) {
             handledConfigParams.current = true;
             void requestAicyCanvasSession().then(async () => {
                 useConfigStore.setState((state) => ({ config: createManagedAicyConfig(state.config), isConfigOpen: false }));
@@ -25,6 +24,7 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
                     useConfigStore.setState((state) => ({ config: createManagedAicyConfig(state.config, models), isConfigOpen: false }));
                 } catch (error) {
                     console.warn(error);
+                    message.warning("暂未读取到托管模型列表，仍可重试文本请求");
                 }
             });
             return;

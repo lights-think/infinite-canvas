@@ -3,8 +3,10 @@ import { create } from "zustand";
 import { persist, type PersistStorage } from "zustand/middleware";
 import { nanoid } from "nanoid";
 import { createAicyPersistStorage } from "@/services/aicy-remote-state";
-import { hasAicyCanvasSession, isAicyCanvasMode } from "@/services/aicy-integration";
-import { chatgpt2apiConfiguredApiKey, chatgpt2apiConfiguredBaseUrl, chatgpt2apiDefaultModels, chatgpt2apiImageModel, chatgpt2apiTextModel, normalizeChatgpt2apiModelName } from "@/services/chatgpt2api-config";
+import { hasAicyCanvasSession, isAicyCanvasMode, isAicyManagedCanvasMode } from "@/services/aicy-integration";
+import { migrateAicyConfigDefaults, withAicyConfigDefaultsVersion } from "@/services/aicy-config-defaults";
+import { chatgpt2apiDefaultModels, chatgpt2apiImageModel, normalizeChatgpt2apiModelName } from "@/services/chatgpt2api-config";
+import { AICY_MANAGED_TEXT_DEFAULT, AICY_MANAGED_TEXT_MODELS, isAicyManagedTextModel, resolveAicyManagedTextRequestModel } from "@/services/aicy-managed-text-models";
 
 export type ApiCallFormat = "openai" | "gemini";
 
@@ -38,6 +40,7 @@ export type AiConfig = {
     videoWatermark: string;
     systemPrompt: string;
     models: string[];
+    availableModels: string[];
     imageModels: string[];
     videoModels: string[];
     textModels: string[];
@@ -77,13 +80,13 @@ export const defaultConfig: AiConfig = {
             baseUrl: OPENAI_BASE_URL,
             apiKey: "",
             apiFormat: "openai",
-            models: ["gpt-image-2", "grok-imagine-video", "gpt-5.5", "gpt-4o-mini-tts"],
+            models: ["gpt-image-2", "grok-imagine-video", ...AICY_MANAGED_TEXT_MODELS, "gpt-4o-mini-tts"],
         },
     ],
     model: "default::gpt-image-2",
     imageModel: "default::gpt-image-2",
     videoModel: "default::grok-imagine-video",
-    textModel: "default::gpt-5.5",
+    textModel: `default::${AICY_MANAGED_TEXT_DEFAULT}`,
     audioModel: "default::gpt-4o-mini-tts",
     audioVoice: "alloy",
     audioFormat: "mp3",
@@ -94,13 +97,14 @@ export const defaultConfig: AiConfig = {
     videoGenerateAudio: "true",
     videoWatermark: "false",
     systemPrompt: "",
-    models: ["default::gpt-image-2", "default::grok-imagine-video", "default::gpt-5.5", "default::gpt-4o-mini-tts"],
+    models: ["default::gpt-image-2", "default::grok-imagine-video", ...AICY_MANAGED_TEXT_MODELS.map((model) => `default::${model}`), "default::gpt-4o-mini-tts"],
+    availableModels: ["gpt-image-2", "grok-imagine-video", ...AICY_MANAGED_TEXT_MODELS, "gpt-4o-mini-tts"],
     imageModels: ["default::gpt-image-2"],
     videoModels: ["default::grok-imagine-video"],
-    textModels: ["default::gpt-5.5"],
+    textModels: AICY_MANAGED_TEXT_MODELS.map((model) => `default::${model}`),
     audioModels: ["default::gpt-4o-mini-tts"],
     quality: "auto",
-    size: "1:1",
+    size: "auto",
     count: "1",
     canvasImageCount: "1",
 };
@@ -127,7 +131,7 @@ type ConfigStore = {
     clearPromptContinue: () => void;
 };
 type ConfigPersistState = {
-    config: ReturnType<typeof aicyPersistedPreferences>;
+    config: ReturnType<typeof aicyPersistedPreferences> | AiConfig;
     webdav: WebdavSyncConfig;
 };
 
@@ -185,19 +189,19 @@ function modelListKey(capability: ModelCapability) {
 }
 
 function isAiConfigReady(config: AiConfig, model: string) {
-    if (isAicyCanvasMode()) return hasAicyCanvasSession() || Boolean(model.trim());
+    if (isAicyManagedCanvasMode()) return hasAicyCanvasSession() || Boolean(model.trim());
     const channel = resolveModelChannel(config, model);
     return Boolean(model.trim() && channel.baseUrl.trim() && channel.apiKey.trim());
 }
 
 function aicyPersistedPreferences(config: AiConfig) {
-    return {
+    return withAicyConfigDefaultsVersion({
         canvasImageCount: normalizeAicyImageCountPreference(config.canvasImageCount),
         count: config.count || defaultConfig.count,
         quality: config.quality || defaultConfig.quality,
         size: config.size || defaultConfig.size,
         systemPrompt: config.systemPrompt || "",
-    };
+    });
 }
 
 function normalizeAicyImageCountPreference(value: string | undefined) {
@@ -236,12 +240,17 @@ export const useConfigStore = create<ConfigStore>()(
             name: CONFIG_STORE_KEY,
             ...(isAicyCanvasMode() ? { storage: createAicyPersistStorage("preferences") as PersistStorage<ConfigPersistState> } : {}),
             partialize: (state) => ({
-                config: isAicyCanvasMode() ? aicyPersistedPreferences(state.config) : state.config,
-                webdav: isAicyCanvasMode() ? defaultWebdavSyncConfig : state.webdav,
+                config: isAicyManagedCanvasMode() ? aicyPersistedPreferences(state.config) : state.config,
+                webdav: isAicyManagedCanvasMode() ? defaultWebdavSyncConfig : state.webdav,
             }),
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;
-                const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;
+                const managedMode = isAicyManagedCanvasMode();
+                const normalizedPersistedConfig = managedMode
+                    ? migrateAicyConfigDefaults((persistedState.config || {}) as Partial<AiConfig> & { defaultsVersion?: number })
+                    : ((persistedState.config || {}) as Partial<AiConfig> & { defaultsVersion?: number });
+                const persistedConfig = { ...normalizedPersistedConfig };
+                delete persistedConfig.defaultsVersion;
                 const persistedWebdav = (persistedState.webdav || {}) as Partial<WebdavSyncConfig>;
                 const config = { ...defaultConfig, ...persistedConfig };
                 if (!Array.isArray(persistedConfig.channels)) config.channels = [];
@@ -275,7 +284,7 @@ export const useConfigStore = create<ConfigStore>()(
                         audioModels: Array.isArray(persistedConfig.audioModels) ? normalizeModelList(config.audioModels, channels) : filterModelsByCapability(models, "audio"),
                     },
                 };
-                return isAicyCanvasMode()
+                return managedMode
                     ? {
                           ...mergedState,
                           webdav: defaultWebdavSyncConfig,
@@ -296,16 +305,17 @@ function normalizeModelList(models: string[], channels: ModelChannel[]) {
 
 export function useEffectiveConfig() {
     const config = useConfigStore((state) => state.config);
-    return useMemo(() => (isAicyCanvasMode() ? createManagedAicyConfig(config) : { ...config, channelMode: "local" as const }), [config]);
+    return useMemo(() => (isAicyManagedCanvasMode() ? createManagedAicyConfig(config) : { ...config, channelMode: "local" as const }), [config]);
 }
 
 export function createManagedAicyConfig(config: Partial<AiConfig> = {}, managedModels?: string[]): AiConfig {
+    const availableModels = createManagedAicyAvailableModels(config, managedModels);
     const rawModels = createManagedAicyConfigModels(config, managedModels);
     const managedChannel: ModelChannel = {
         id: AICY_MANAGED_CHANNEL_ID,
-        name: "chatgpt2api",
-        baseUrl: chatgpt2apiConfiguredBaseUrl(),
-        apiKey: chatgpt2apiConfiguredApiKey(),
+        name: "Aicy 托管",
+        baseUrl: "",
+        apiKey: "",
         apiFormat: "openai",
         models: rawModels,
     };
@@ -313,7 +323,8 @@ export function createManagedAicyConfig(config: Partial<AiConfig> = {}, managedM
     const imageModels = filterModelsByCapability(models, "image");
     const textModels = filterModelsByCapability(models, "text");
     const imageModel = normalizeModelOptionValue(config.imageModel || chatgpt2apiImageModel(rawModels), [managedChannel]) || imageModels[0] || models[0] || "";
-    const textModel = normalizeModelOptionValue(config.textModel || chatgpt2apiTextModel(rawModels), [managedChannel]) || textModels[0] || models[0] || "";
+    const selectedTextModel = modelOptionName(config.textModel || "");
+    const textModel = normalizeModelOptionValue(isAicyManagedTextModel(selectedTextModel) ? selectedTextModel : AICY_MANAGED_TEXT_DEFAULT, [managedChannel]) || textModels[0] || "";
     return {
         ...defaultConfig,
         ...aicyPersistedPreferences({ ...defaultConfig, ...config }),
@@ -328,6 +339,7 @@ export function createManagedAicyConfig(config: Partial<AiConfig> = {}, managedM
         textModel,
         audioModel: "",
         models,
+        availableModels,
         imageModels,
         videoModels: [],
         textModels,
@@ -336,12 +348,19 @@ export function createManagedAicyConfig(config: Partial<AiConfig> = {}, managedM
 }
 
 export function createManagedAicyConfigModels(config: Partial<AiConfig> = {}, managedModels?: string[]) {
-    const existingManagedModels = Array.isArray(config.channels) ? config.channels.find((channel) => channel.id === AICY_MANAGED_CHANNEL_ID)?.models || [] : [];
-    const authoritativeModels = [...(managedModels || []), ...existingManagedModels];
-    const localModels = authoritativeModels.length ? [] : [...(config.models || []), ...(config.imageModels || []), ...(config.textModels || []), config.model || "", config.imageModel || "", config.textModel || ""];
-    const fallbackModels = authoritativeModels.length ? [] : chatgpt2apiDefaultModels();
-    const candidates = uniqueRawModels([...authoritativeModels, ...localModels, ...fallbackModels]);
-    return uniqueRawModels(candidates.map((model) => normalizeChatgpt2apiModelName(model, candidates)));
+    const availableModels = createManagedAicyAvailableModels(config, managedModels);
+    return uniqueRawModels([
+        ...filterModelsByCapability(availableModels, "image"),
+        ...filterModelsByCapability(availableModels, "video"),
+        ...filterModelsByCapability(availableModels, "audio"),
+        ...AICY_MANAGED_TEXT_MODELS,
+    ]);
+}
+
+function createManagedAicyAvailableModels(config: Partial<AiConfig>, managedModels?: string[]) {
+    if (managedModels) return uniqueRawModels(managedModels);
+    if (Array.isArray(config.availableModels) && config.availableModels.length) return uniqueRawModels(config.availableModels);
+    return uniqueRawModels(chatgpt2apiDefaultModels());
 }
 
 export function createModelChannel(channel?: Partial<ModelChannel>): ModelChannel {
@@ -405,13 +424,16 @@ export function resolveModelChannel(config: AiConfig, value: string) {
 }
 
 export function resolveModelRequestConfig(config: AiConfig, value: string) {
-    if (isAicyCanvasMode()) {
+    if (isAicyManagedCanvasMode()) {
         const managed = createManagedAicyConfig(config);
         const requestedModel = modelOptionName(value || config.model || config.imageModel);
-        const models = managed.channels[0]?.models || [];
+        const availableModels = managed.availableModels.length ? managed.availableModels : chatgpt2apiDefaultModels();
+        const model = isAicyManagedTextModel(requestedModel)
+            ? resolveAicyManagedTextRequestModel(requestedModel, availableModels).model
+            : normalizeChatgpt2apiModelName(requestedModel, availableModels);
         return {
             ...managed,
-            model: normalizeChatgpt2apiModelName(requestedModel, models),
+            model,
         };
     }
     const channel = resolveModelChannel(config, value);

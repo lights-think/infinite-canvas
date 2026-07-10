@@ -3,6 +3,9 @@ import localforage from "localforage";
 import { nanoid } from "nanoid";
 import { readImageMeta } from "@/lib/image-utils";
 import { deleteAicyCanvasFile, isAicyCanvasMode, listAicyCanvasFiles, readAicyCanvasFile, saveAicyCanvasFile } from "@/services/aicy-integration";
+import { resolveCanvasImageBlob, type CanvasImageSource } from "@/services/canvas-image-source";
+
+export type { CanvasImageSource } from "@/services/canvas-image-source";
 
 export type UploadedImage = {
     url: string;
@@ -16,15 +19,29 @@ export type UploadedImage = {
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
 const objectUrls = new Map<string, string>();
 
-export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
-    const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
+async function createUploadedImage(storageKey: string, blob: Blob): Promise<UploadedImage> {
+    const url = objectUrls.get(storageKey) || URL.createObjectURL(blob);
+    if (!objectUrls.has(storageKey)) objectUrls.set(storageKey, url);
+    const meta = await readImageMeta(url);
+    return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType };
+}
+
+export async function uploadImage(input: string | Blob | CanvasImageSource): Promise<UploadedImage> {
+    if (input instanceof Blob) return storeNewImage(input);
+    const resolved = await resolveCanvasImageBlob(typeof input === "string" ? { dataUrl: input } : input, {
+        readStoredFile: getImageBlob,
+        fetchBlob: fetchImageBlob,
+    });
+    // storageKey 表示图片已经持久化，不能再生成新 key 或重复上传。
+    if (resolved.storageKey) return createUploadedImage(resolved.storageKey, resolved.blob);
+    return storeNewImage(resolved.blob);
+}
+
+async function storeNewImage(blob: Blob) {
     const storageKey = `image:${nanoid()}`;
     if (isAicyCanvasMode()) await saveAicyCanvasFile(storageKey, blob);
     else await store.setItem(storageKey, blob);
-    const url = URL.createObjectURL(blob);
-    objectUrls.set(storageKey, url);
-    const meta = await readImageMeta(url);
-    return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType };
+    return createUploadedImage(storageKey, blob);
 }
 
 export async function resolveImageUrl(storageKey?: string, fallback = "") {
@@ -51,10 +68,9 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
     return url;
 }
 
-export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }) {
-    const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
-    if (!url || url.startsWith("data:")) return url;
-    return blobToDataUrl(await (await fetch(url)).blob());
+export async function imageToDataUrl(image: CanvasImageSource) {
+    const resolved = await resolveCanvasImageBlob(image, { readStoredFile: getImageBlob, fetchBlob: fetchImageBlob });
+    return blobToDataUrl(resolved.blob);
 }
 
 export async function deleteStoredImages(keys: Iterable<string>) {
@@ -98,4 +114,10 @@ function blobToDataUrl(blob: Blob) {
         reader.onerror = () => reject(new Error("读取图片失败"));
         reader.readAsDataURL(blob);
     });
+}
+
+async function fetchImageBlob(url: string) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`读取图片失败：${response.status}`);
+    return response.blob();
 }

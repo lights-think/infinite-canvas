@@ -4,67 +4,35 @@ import { buildApiUrl, resolveModelRequestConfig, type AiConfig, type ModelChanne
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
-import { isAicyCanvasMode, requestAicyCanvasSession } from "@/services/aicy-integration";
-import { chatgpt2apiAuthHeaders, chatgpt2apiBrowserBaseUrl } from "@/services/chatgpt2api-config";
+import { aicyAiFetch, isAicyManagedCanvasMode } from "@/services/aicy-integration";
 import { imageToDataUrl } from "@/services/image-storage";
+import {
+    buildResponseRequestBody,
+    requestStreamingResponse,
+    responseErrorMessage,
+    type AiTextMessage,
+    type ResponseFunctionTool,
+    type ResponseInputMessage,
+    type ResponseToolCall,
+    type ToolChoice,
+    type ToolResponseResult,
+} from "@/services/api/responses";
+import type { AicyGeneratedImageFile } from "@/services/canvas-image-source";
 import type { ReferenceImage } from "@/types/image";
 
-export type AiTextMessage = {
-    role: "system" | "user" | "assistant";
-    content: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
-};
-
-export type ResponseToolCall = {
-    id: string;
-    type: "function";
-    function: { name: string; arguments: string };
-    thoughtSignature?: string;
-};
-
-export type ResponseInputMessage = AiTextMessage | { type: "function_call"; call_id: string; name: string; arguments: string; thoughtSignature?: string } | { role: "tool"; tool_call_id: string; content: string };
-
-export type ResponseFunctionTool = {
-    type: "function";
-    function: {
-        name: string;
-        description?: string;
-        parameters: Record<string, unknown>;
-        strict?: boolean;
-    };
-};
-
-export type ToolResponseResult = {
-    content: string;
-    toolCalls: ResponseToolCall[];
-};
-
-type ToolChoice = "auto" | "required" | { type: "function"; name: string };
-type ResponseMessageContent = AiTextMessage["content"] | string;
-type ResponseInputContent = { type: "input_text"; text: string } | { type: "input_image"; image_url: string };
-type ResponseInputItem = { role: "system" | "user" | "assistant"; content: string | ResponseInputContent[] } | { type: "function_call"; call_id: string; name: string; arguments: string } | { type: "function_call_output"; call_id: string; output: string };
-type ResponseApiToolDefinition = {
-    type: "function";
-    name: string;
-    description?: string;
-    parameters: Record<string, unknown>;
-    strict?: boolean;
-};
-type ResponseApiOutputItem = { type?: "message"; content?: Array<{ type?: string; text?: string }> } | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string };
-type ResponseApiPayload = {
-    id?: string;
-    output?: ResponseApiOutputItem[];
-    output_text?: string;
-    error?: { message?: string };
-    code?: number;
-    msg?: string;
-};
-type ResponseStreamState = { buffer: string; text: string; payload?: ResponseApiPayload; error?: string };
+export type { AicyGeneratedImageFile } from "@/services/canvas-image-source";
+export type { AiTextMessage, ResponseFunctionTool, ResponseInputMessage, ResponseToolCall, ToolResponseResult } from "@/services/api/responses";
 
 type ImageApiResponse = {
     data?: Array<Record<string, unknown>>;
     error?: { message?: string };
     code?: number;
     msg?: string;
+};
+export type GeneratedImageResult = {
+    id: string;
+    dataUrl?: string;
+    aicyFile?: AicyGeneratedImageFile;
 };
 type GeminiPart = {
     text?: string;
@@ -83,6 +51,7 @@ type GeminiPayload = {
     error?: { message?: string };
     promptFeedback?: { blockReason?: string };
 };
+type ResponseMessageContent = AiTextMessage["content"] | string;
 type GeminiStreamState = { buffer: string; text: string; toolCalls: ResponseToolCall[]; error?: string };
 type RequestOptions = { signal?: AbortSignal };
 
@@ -233,15 +202,30 @@ function resolveImageDataUrl(item: Record<string, unknown>) {
     return null;
 }
 
+function resolveAicyGeneratedImageFile(item: Record<string, unknown>): AicyGeneratedImageFile | null {
+    const file = item.aicy_file;
+    if (!file || typeof file !== "object" || Array.isArray(file)) return null;
+    const values = file as Record<string, unknown>;
+    const storageKey = stringField(values.storage_key);
+    const mimeType = stringField(values.mime_type);
+    const size = Number(values.size);
+    if (!storageKey || !mimeType || !Number.isFinite(size) || size <= 0) return null;
+    return { storageKey, mimeType, size };
+}
+
 function parseImagePayload(payload: ImageApiResponse) {
     if (typeof payload.code === "number" && payload.code !== 0) {
         throw new Error(payload.msg || "请求失败");
     }
-    const images =
+    const images: GeneratedImageResult[] =
         payload.data
-            ?.map(resolveImageDataUrl)
-            .filter((value): value is string => Boolean(value))
-            .map((dataUrl) => ({ id: nanoid(), dataUrl })) || [];
+            ?.map((item) => {
+                const dataUrl = resolveImageDataUrl(item);
+                const aicyFile = resolveAicyGeneratedImageFile(item);
+                if (!dataUrl && !aicyFile) return null;
+                return { id: nanoid(), ...(dataUrl ? { dataUrl } : {}), ...(aicyFile ? { aicyFile } : {}) };
+            })
+            .filter((value): value is GeneratedImageResult => Boolean(value)) || [];
 
     if (images.length === 0) {
         throw new Error("接口没有返回图片");
@@ -272,12 +256,10 @@ function withSystemPrompt(config: AiConfig, prompt: string) {
 }
 
 function aiApiUrl(config: AiConfig, path: string) {
-    if (isAicyCanvasMode()) return buildApiUrl(chatgpt2apiBrowserBaseUrl(), path);
     return buildApiUrl(config.baseUrl, path);
 }
 
 function aiHeaders(config: AiConfig, contentType?: string) {
-    if (isAicyCanvasMode()) return chatgpt2apiAuthHeaders(contentType);
     return {
         Authorization: `Bearer ${config.apiKey}`,
         ...(contentType ? { "Content-Type": contentType } : {}),
@@ -307,72 +289,8 @@ function geminiHeaders(config: Pick<AiConfig, "apiKey">) {
     };
 }
 
-function withSystemMessage<T extends ResponseInputMessage>(config: AiConfig, messages: T[]): ResponseInputMessage[] {
-    const systemPrompt = config.systemPrompt.trim();
-    return systemPrompt ? [{ role: "system" as const, content: systemPrompt }, ...messages] : messages;
-}
-
-function toResponseInput(messages: ResponseInputMessage[]): ResponseInputItem[] {
-    return messages.flatMap((message): ResponseInputItem[] => {
-        if ("type" in message) return [message];
-        if (message.role === "tool") return [{ type: "function_call_output", call_id: message.tool_call_id, output: message.content }];
-        return [{ role: message.role, content: toResponseContent(message.content || "") }];
-    });
-}
-
-function toResponseContent(content: ResponseMessageContent): string | ResponseInputContent[] {
-    if (!Array.isArray(content)) return String(content || "");
-    return content.map((item) => (item.type === "text" ? { type: "input_text" as const, text: item.text } : { type: "input_image" as const, image_url: item.image_url.url }));
-}
-
-function toResponseTool(tool: ResponseFunctionTool): ResponseApiToolDefinition {
-    return {
-        type: "function",
-        name: tool.function.name,
-        description: tool.function.description,
-        parameters: tool.function.parameters,
-        strict: tool.function.strict,
-    };
-}
-
-function parseToolResponse(payload: ResponseApiPayload): ToolResponseResult {
-    const output = payload.output || [];
-    const content =
-        payload.output_text ||
-        output
-            .flatMap((item) => (item.type === "message" ? item.content || [] : []))
-            .map((item) => item.text || "")
-            .join("");
-    const toolCalls = output
-        .filter((item): item is Extract<ResponseApiOutputItem, { type?: "function_call" }> => item.type === "function_call")
-        .map((item) => ({
-            id: item.call_id || item.id || "",
-            type: "function" as const,
-            function: { name: item.name || "", arguments: item.arguments || "{}" },
-        }))
-        .filter((item) => item.id && item.function.name);
-    return { content, toolCalls };
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function responseErrorMessage(value: unknown) {
-    if (!isRecord(value)) return "";
-    const error = isRecord(value.error) ? value.error : undefined;
-    const response = isRecord(value.response) ? value.response : undefined;
-    const responseError = response && isRecord(response.error) ? response.error : undefined;
-    return stringValue(value.msg) || stringValue(error?.message) || stringValue(responseError?.message);
-}
-
-function stringValue(value: unknown) {
-    return typeof value === "string" ? value : "";
-}
-
-function validateResponsePayload(payload: ResponseApiPayload) {
-    if (typeof payload.code === "number" && payload.code !== 0) throw new Error(payload.msg || "请求失败");
-    if (payload.error?.message) throw new Error(payload.error.message);
 }
 
 function validateGeminiPayload(payload: GeminiPayload) {
@@ -388,79 +306,6 @@ async function readFetchError(response: Response, fallback: string) {
     } catch {
         return text.slice(0, 300) || readStatusError(response.status, fallback);
     }
-}
-
-function consumeResponseStreamBlock(block: string, state: ResponseStreamState, onDelta?: (text: string) => void) {
-    const data = block
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).replace(/^ /, ""))
-        .join("\n")
-        .trim();
-    if (!data || data === "[DONE]") return;
-    const event = JSON.parse(data) as Record<string, unknown>;
-    const type = stringValue(event.type);
-    const errorMessage = responseErrorMessage(event);
-    if (errorMessage) state.error = errorMessage;
-    if (type === "response.output_text.delta" && typeof event.delta === "string") {
-        state.text += event.delta;
-        onDelta?.(state.text);
-    }
-    if (type === "response.output_text.done" && !state.text && typeof event.text === "string") {
-        state.text = event.text;
-        onDelta?.(state.text);
-    }
-    if (type === "response.completed" && isRecord(event.response)) {
-        state.payload = event.response as ResponseApiPayload;
-    } else if (Array.isArray(event.output)) {
-        state.payload = event as ResponseApiPayload;
-    }
-}
-
-function consumeResponseStreamText(state: ResponseStreamState, text: string, onDelta?: (text: string) => void, flush = false) {
-    state.buffer += text;
-    for (;;) {
-        const match = state.buffer.match(/\r?\n\r?\n/);
-        if (!match) break;
-        const index = match.index ?? 0;
-        consumeResponseStreamBlock(state.buffer.slice(0, index), state, onDelta);
-        state.buffer = state.buffer.slice(index + match[0].length);
-    }
-    if (flush && state.buffer.trim()) {
-        consumeResponseStreamBlock(state.buffer, state, onDelta);
-        state.buffer = "";
-    }
-}
-
-async function requestStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
-    const response = await fetch(aiApiUrl(config, "/responses"), {
-        method: "POST",
-        headers: { ...aiHeaders(config, "application/json"), Accept: "text/event-stream" },
-        body: JSON.stringify({ ...body, stream: true }),
-        signal: options?.signal,
-    });
-    if (!response.ok) throw new Error(await readFetchError(response, "请求失败"));
-    if (!response.body) {
-        const payload = (await response.json()) as ResponseApiPayload;
-        validateResponsePayload(payload);
-        return parseToolResponse(payload);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    const state: ResponseStreamState = { buffer: "", text: "" };
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        consumeResponseStreamText(state, decoder.decode(value, { stream: true }), onDelta);
-        if (state.error) throw new Error(state.error);
-    }
-    consumeResponseStreamText(state, decoder.decode(), onDelta, true);
-    if (state.error) throw new Error(state.error);
-    if (!state.payload) return { content: state.text, toolCalls: [] };
-    validateResponsePayload(state.payload);
-    const result = parseToolResponse(state.payload);
-    return { ...result, content: state.text || result.content };
 }
 
 function toGeminiBody(config: AiConfig, messages: ResponseInputMessage[], extra?: Record<string, unknown>) {
@@ -647,7 +492,6 @@ function parseGeminiImagePayload(payload: GeminiPayload) {
 }
 
 export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
-    if (isAicyCanvasMode()) await requestAicyCanvasSession();
     const requestConfig = resolveModelRequestConfig(config, config.imageModel || config.model);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     if (requestConfig.apiFormat === "gemini") {
@@ -659,18 +503,29 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     }
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(quality, config.size);
+    const body = {
+        model: requestConfig.model,
+        prompt: withSystemPrompt(requestConfig, prompt),
+        n,
+        ...(quality ? { quality } : {}),
+        ...(requestSize ? { size: requestSize } : {}),
+        response_format: "b64_json",
+        output_format: IMAGE_OUTPUT_FORMAT,
+    };
     try {
+        if (isAicyManagedCanvasMode()) {
+            const response = await aicyAiFetch("/images/generations", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+                signal: options?.signal,
+            });
+            if (!response.ok) throw new Error(await readFetchError(response, "请求失败"));
+            return parseImagePayload((await response.json()) as ImageApiResponse);
+        }
         const response = await axios.post<ImageApiResponse>(
             aiApiUrl(requestConfig, "/images/generations"),
-            {
-                model: requestConfig.model,
-                prompt: withSystemPrompt(requestConfig, prompt),
-                n,
-                ...(quality ? { quality } : {}),
-                ...(requestSize ? { size: requestSize } : {}),
-                response_format: "b64_json",
-                output_format: IMAGE_OUTPUT_FORMAT,
-            },
+            body,
             {
                 headers: aiHeaders(requestConfig, "application/json"),
                 signal: options?.signal,
@@ -684,7 +539,6 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
 }
 
 export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], mask?: ReferenceImage, options?: RequestOptions) {
-    if (isAicyCanvasMode()) await requestAicyCanvasSession();
     const requestConfig = resolveModelRequestConfig(config, config.imageModel || config.model);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const requestPrompt = buildImageReferencePromptText(prompt, references);
@@ -715,6 +569,15 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     if (mask) formData.set("mask", dataUrlToFile(mask));
 
     try {
+        if (isAicyManagedCanvasMode()) {
+            const response = await aicyAiFetch("/images/edits", {
+                method: "POST",
+                body: formData,
+                signal: options?.signal,
+            });
+            if (!response.ok) throw new Error(await readFetchError(response, "请求失败"));
+            return parseImagePayload((await response.json()) as ImageApiResponse);
+        }
         const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal });
         const images = parseImagePayload(response.data);
         return images;
@@ -735,10 +598,7 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
             (
                 await requestStreamingResponse(
                     requestConfig,
-                    {
-                        model: requestConfig.model,
-                        input: toResponseInput(withSystemMessage(requestConfig, messages)),
-                    },
+                    buildResponseRequestBody(requestConfig, messages),
                     onDelta,
                     options,
                 )
@@ -758,13 +618,7 @@ export async function requestToolResponse(config: AiConfig, messages: ResponseIn
         }
         return await requestStreamingResponse(
             requestConfig,
-            {
-                model: requestConfig.model,
-                input: toResponseInput(withSystemMessage(requestConfig, messages)),
-                tools: tools.map(toResponseTool),
-                tool_choice: toolChoice,
-                parallel_tool_calls: false,
-            },
+            buildResponseRequestBody(requestConfig, messages, { tools, toolChoice }),
             onDelta,
             options,
         );
@@ -775,12 +629,11 @@ export async function requestToolResponse(config: AiConfig, messages: ResponseIn
 
 export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat">) {
     try {
-        if (isAicyCanvasMode()) {
-            await requestAicyCanvasSession();
-            const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(chatgpt2apiBrowserBaseUrl(), "/models"), {
-                headers: chatgpt2apiAuthHeaders(),
-            });
-            return (response.data.data || [])
+        if (isAicyManagedCanvasMode()) {
+            const response = await aicyAiFetch("/models");
+            if (!response.ok) throw new Error(await readFetchError(response, "读取模型失败"));
+            const payload = (await response.json()) as { data?: Array<{ id?: string }>; error?: { message?: string } };
+            return (payload.data || [])
                 .map((model) => model.id)
                 .filter((id): id is string => Boolean(id))
                 .sort((a, b) => a.localeCompare(b));
