@@ -48,6 +48,7 @@ import { useCanvasAgentStore } from "@/stores/canvas/use-canvas-agent-store";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { applyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { buildReturnedImageBatch, isBatchChildHidden } from "@/lib/canvas/canvas-returned-image-batch";
+import { addConfigReferenceForConnection, removeConfigReferenceForConnection } from "@/lib/canvas/canvas-config-reference-tokens";
 import { buildCanvasResourceReferences, buildNodeMentionReferences } from "@/lib/canvas/canvas-resource-references";
 import {
     CanvasNodeType,
@@ -618,7 +619,9 @@ function InfiniteCanvasPage() {
             const { fromNodeId, toNodeId } = connection;
             const exists = connectionsRef.current.some((conn) => conn.fromNodeId === fromNodeId && conn.toNodeId === toNodeId);
             if (!exists) {
-                setConnections((prev) => [...prev, { id: `conn-${Date.now()}`, fromNodeId, toNodeId }]);
+                const nextConnection = { id: `conn-${Date.now()}`, fromNodeId, toNodeId };
+                setNodes((prev) => addConfigReferenceForConnection(prev, nextConnection));
+                setConnections((prev) => [...prev, nextConnection]);
             }
             setContextMenu(null);
         },
@@ -634,8 +637,9 @@ function InfiniteCanvasPage() {
                 message.warning("配置节点之间不能连接");
                 return;
             }
-            setNodes((prev) => [...prev, newNode]);
-            setConnections((prev) => [...prev, { id: nanoid(), ...connection }]);
+            const nextConnection = { id: nanoid(), ...connection };
+            setNodes((prev) => addConfigReferenceForConnection([...prev, newNode], nextConnection));
+            setConnections((prev) => [...prev, nextConnection]);
             setSelectedNodeIds(new Set([newNode.id]));
             setSelectedConnectionId(null);
             if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio) setDialogNodeId(newNode.id);
@@ -846,7 +850,9 @@ function InfiniteCanvasPage() {
                 if (ids.has(node.id)) node.metadata?.batchChildIds?.forEach((childId) => allIds.add(childId));
             });
             setNodes((prev) => {
-                const next = prev.filter((node) => !allIds.has(node.id));
+                const disconnected = connectionsRef.current.filter((connection) => allIds.has(connection.fromNodeId) || allIds.has(connection.toNodeId));
+                const withReferencesRemoved = disconnected.reduce(removeConfigReferenceForConnection, prev);
+                const next = withReferencesRemoved.filter((node) => !allIds.has(node.id));
                 return next.map((node) => {
                     const childIds = node.metadata?.batchChildIds?.filter((childId) => !allIds.has(childId));
                     if (!node.metadata?.isBatchRoot || childIds?.length === node.metadata.batchChildIds?.length) return node;
@@ -885,6 +891,8 @@ function InfiniteCanvasPage() {
     );
 
     const deleteConnection = useCallback((connectionId: string) => {
+        const connection = connectionsRef.current.find((item) => item.id === connectionId);
+        if (connection) setNodes((prev) => removeConfigReferenceForConnection(prev, connection));
         setConnections((prev) => prev.filter((conn) => conn.id !== connectionId));
         setSelectedConnectionId((current) => (current === connectionId ? null : current));
         setContextMenu((current) => (current?.type === "connection" && current.connectionId === connectionId ? null : current));

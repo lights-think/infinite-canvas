@@ -1,9 +1,10 @@
 import { forwardRef, useMemo, useRef, useState } from "react";
-import type { CSSProperties, MouseEvent, PointerEvent, TextareaHTMLAttributes } from "react";
+import type { MouseEvent, PointerEvent, TextareaHTMLAttributes } from "react";
 import { createPortal } from "react-dom";
 import { FileText, Image as ImageIcon, Music2, Video } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
+import { buildMentionLayerStyles } from "@/lib/canvas/canvas-mention-layer-style";
 import { isImeComposing, isPlainEnterKey } from "@/lib/keyboard-event";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
@@ -85,18 +86,13 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
     };
 
     const showOverlay = Boolean(activeLabels.length && !hasSelection);
-    const mergedStyle = {
-        ...(style || {}),
-        color: showOverlay ? "transparent" : style?.color,
-        caretColor: style?.color || theme.node.text,
-        ...(showOverlay ? { background: "transparent", backgroundColor: "transparent" } : {}),
-    } as CSSProperties;
+    const { textareaStyle, overlayStyle } = buildMentionLayerStyles(style, theme.node.text, showOverlay);
     const menu = mention && candidates.length && textareaRef.current ? <MentionMenu textarea={textareaRef.current} references={candidates} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} /> : null;
 
     return (
         <div className={`relative h-full w-full ${containerClassName || ""}`}>
             {showOverlay ? (
-                <div ref={overlayRef} className={`${className || ""} pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words`} style={{ ...style, color: theme.node.text }}>
+                <div ref={overlayRef} className={`${className || ""} pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words`} style={overlayStyle}>
                     <MentionHighlightText value={value || props.placeholder?.toString() || ""} labels={activeLabels} placeholder={!value} />
                 </div>
             ) : null}
@@ -109,7 +105,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                 }}
                 value={value}
                 className={className}
-                style={mergedStyle}
+                style={textareaStyle}
                 onChange={(event) => {
                     const next = event.target.value;
                     onChange(next);
